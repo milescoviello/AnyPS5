@@ -4,7 +4,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <initializer_list>
+#include <thread>
 
 extern "C" {
 int APS5_VABI sem_init_nid_postfix(void*, int, unsigned int);
@@ -12,6 +14,7 @@ int APS5_VABI sem_destroy_nid_postfix(void*);
 int APS5_VABI sem_post_nid_postfix(void*);
 int APS5_VABI sem_trywait_nid_postfix(void*);
 int APS5_VABI sem_getvalue_nid_postfix(void*, int*);
+int APS5_VABI sem_timedwait_nid_postfix(void*, const KernelTimespec*);
 int* APS5_VABI __error_nid_postfix();
 }
 
@@ -57,5 +60,22 @@ int main(int argc, char** argv) {
     Require(sem_getvalue_nid_postfix(&sem, &value) == 0 && value == 1, "normal post must increment");
     Require(sem_trywait_nid_postfix(&sem) == 0, "normal wait must succeed");
     Require(sem_getvalue_nid_postfix(&sem, &value) == 0 && value == 0, "normal wait must decrement");
+    const KernelTimespec invalid{0, 1000000000};
+    const KernelTimespec expired{0, 0};
+    Require(sem_post_nid_postfix(&sem) == 0, "post before an invalid timeout must succeed");
+    Require(sem_timedwait_nid_postfix(&sem, &invalid) == 0, "an available semaphore must be taken before the timeout is checked");
+    Require(sem_post_nid_postfix(&sem) == 0, "post before a null timeout must succeed");
+    Require(sem_timedwait_nid_postfix(&sem, nullptr) == 0, "a null timeout must take an available semaphore");
+    Require(sem_getvalue_nid_postfix(&sem, &value) == 0 && value == 0, "timed waits must decrement");
+    *__error_nid_postfix() = 0;
+    Require(sem_timedwait_nid_postfix(&sem, &invalid) == -1 && *__error_nid_postfix() == 22, "an invalid timeout must fail when the wait would block");
+    Require(sem_timedwait_nid_postfix(&sem, &expired) == -1 && *__error_nid_postfix() == 60, "an expired timeout must time out");
+    std::thread poster([&sem] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        sem_post_nid_postfix(&sem);
+    });
+    Require(sem_timedwait_nid_postfix(&sem, nullptr) == 0, "a null timeout must wait for a post");
+    poster.join();
+    Require(sem_getvalue_nid_postfix(&sem, &value) == 0 && value == 0, "the posted count must be taken");
     Require(sem_destroy_nid_postfix(&sem) == 0, "normal destroy must succeed");
 }
