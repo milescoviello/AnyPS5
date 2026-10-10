@@ -241,6 +241,8 @@ int main() {
     Require(stat_nid_postfix("\xff\xfe", &status) == -1 && *__error_nid_postfix() == 2);
     FileStat dirStatus{};
     Require(stat_nid_postfix((rootName + "/").c_str(), &dirStatus) == 0 && (dirStatus.st_mode & 0170000) == 0040000);
+    const auto viaParent = rootName + "/../" + root.filename().string() + "/present.txt";
+    Require(stat_nid_postfix(viaParent.c_str(), &status) == 0 && status.st_size == 5);
     Require(stat_nid_postfix(nullptr, &status) == -1 && *__error_nid_postfix() == 14);
     Require(stat_nid_postfix(presentName.c_str(), nullptr) == -1 && *__error_nid_postfix() == 14);
     FileStat linkStatus{};
@@ -262,6 +264,12 @@ int main() {
     Require(lstat_nid_postfix(dangling.string().c_str(), &linkStatus) == 0 && (linkStatus.st_mode & 0170000) == 0120000);
     Require(stat_nid_postfix(dangling.string().c_str(), &status) == -1 && *__error_nid_postfix() == 2);
     Require(lstat_nid_postfix((root / "present.txt" / "child").string().c_str(), &linkStatus) == -1 && *__error_nid_postfix() == 20);
+    const auto viaMissing = rootName + "/missing/../present.txt";
+    Require(stat_nid_postfix(viaMissing.c_str(), &status) == -1 && *__error_nid_postfix() == 2);
+    Require(open_nid_postfix(viaMissing.c_str(), 0, 0) == -1 && *__error_nid_postfix() == 2);
+    Require(unlink_nid_postfix(viaMissing.c_str()) == -1 && *__error_nid_postfix() == 2 && std::filesystem::exists(present));
+    Require(stat_nid_postfix((presentName + "/..").c_str(), &status) == -1 && *__error_nid_postfix() == 20);
+    Require(sceKernelStat((presentName + "/../present.txt").c_str(), &status) == static_cast<int>(0x80020014u));
     Require(unlink_nid_postfix(link.string().c_str()) == 0 && unlink_nid_postfix(dangling.string().c_str()) == 0);
 #endif
     FileStat identity{};
