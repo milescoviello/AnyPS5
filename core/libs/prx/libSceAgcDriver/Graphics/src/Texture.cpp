@@ -1425,6 +1425,19 @@ bool StorageTexture::Refresh() {
                 // One stamp scan for every unit (each is one stamp block); the unchanged units move
                 // to the current generation, so the whole-surface check answers next time.
                 scanBlocks();
+                // An import window stamps the pages whose write protection the import resolved as
+                // a possible CPU store (BlockMaybeWritten); a driver that pins imported pages for
+                // writing (NVIDIA on Linux) resolves it without storing anything. A unit whose
+                // bytes still equal what the image was uploaded from or written back as is
+                // unchanged, as the comparison of untracked memory decides.
+                if (tracked) {
+                    for (std::uint32_t unit = 0; unit < trackedLayers; ++unit) {
+                        std::array<std::uint8_t, 1> compare{};
+                        if (stampedBlocks[unit] != GuestMemory::BlockMaybeWritten || !compareUntracked(layerBegin(unit), static_cast<std::size_t>(layerBytes(unit)), compare, false) || compare[0] != GuestMemory::BlockUnchanged) continue;
+                        stampedBlocks[unit] = GuestMemory::BlockUnchanged;
+                        cpuBlocks[unit] = 0;
+                    }
+                }
                 for (std::uint32_t unit = 0; unit < trackedLayers; ++unit) {
                     if (stampedBlocks[unit] == 0) {
                         layerGeneration[unit] = current;
