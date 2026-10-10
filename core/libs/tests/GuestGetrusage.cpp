@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <thread>
 struct Timeval {
     std::int64_t tv_sec;
@@ -39,4 +40,9 @@ int main() {
     });
     worker.join();
     Require(CpuMicros(0) >= 500000);
+    ResourceUsage children;
+    std::memset(&children, 0xff, sizeof(children));
+    Require(getrusage_nid_postfix(-1, &children) == 0);
+    const ResourceUsage zero{};
+    Require(std::memcmp(&children, &zero, sizeof(children)) == 0);
 }
