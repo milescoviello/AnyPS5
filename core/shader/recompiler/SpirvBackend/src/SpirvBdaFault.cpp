@@ -70,9 +70,13 @@ void DefineBdaFaultFunction(SpirvEmitterState& state) {
     state.module.AddFunction(spv::OpFunctionEnd);
 }
 
-void RecordBdaFault(SpirvEmitterState& state, std::uint32_t address, std::uint32_t bytes, std::uint32_t instruction, BdaAbi::FaultReason reason) {
+void RecordBdaFaultReason(SpirvEmitterState& state, std::uint32_t reason, std::uint32_t address, std::uint32_t bytes, std::uint32_t instruction) {
     if (state.bdaFaultFunction == 0 || !state.program.Info().usesDma) throw std::runtime_error("BDA fault function is missing");
-    state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.bdaFaultFunction, ConstantU32(state, static_cast<std::uint32_t>(reason)), address, bytes, instruction);
+    state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.bdaFaultFunction, reason, address, bytes, instruction);
+}
+
+void RecordBdaFault(SpirvEmitterState& state, std::uint32_t address, std::uint32_t bytes, std::uint32_t instruction, BdaAbi::FaultReason reason) {
+    RecordBdaFaultReason(state, ConstantU32(state, static_cast<std::uint32_t>(reason)), address, bytes, instruction);
 }
 
 void RecordBdaFaultWords(SpirvEmitterState& state, std::uint32_t addressLow, std::uint32_t addressHigh, std::uint32_t bytes, std::uint32_t instruction, BdaAbi::FaultReason reason) {
@@ -84,17 +88,6 @@ void RecordBdaFaultWords(SpirvEmitterState& state, std::uint32_t addressLow, std
     }
     if (state.bdaFaultFunction == 0) throw std::runtime_error("BDA fault function is missing");
     state.module.AddFunction(spv::OpFunctionCall, TypeVoid(state), state.module.AllocateId(), state.bdaFaultFunction, ConstantU32(state, static_cast<std::uint32_t>(reason)), addressLow, addressHigh, bytes, instruction);
-}
-
-void ReturnBdaFailureIf(SpirvEmitterState& state, std::uint32_t condition, std::uint32_t address, std::uint32_t bytes, std::uint32_t instruction, BdaAbi::FaultReason reason) {
-    const auto failed = state.module.AllocateId();
-    const auto next = state.module.AllocateId();
-    state.module.AddFunction(spv::OpSelectionMerge, next, spv::SelectionControlMaskNone);
-    state.module.AddFunction(spv::OpBranchConditional, condition, failed, next);
-    EmitLabel(state, failed);
-    RecordBdaFault(state, address, bytes, instruction, reason);
-    state.module.AddFunction(spv::OpReturnValue, BdaConstant(state, 0u));
-    EmitLabel(state, next);
 }
 
 void StopBdaInvocationIf(SpirvEmitterState& state, std::uint32_t condition) {

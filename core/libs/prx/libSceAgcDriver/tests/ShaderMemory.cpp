@@ -2123,6 +2123,7 @@ void verifyBdaReadFallbackFunctions() {
             std::size_t mainLookups = 0;
             std::size_t mainProbes = 0;
             std::size_t spanCalls = 0;
+            std::size_t lookupFaultSites = 0;
             std::array<std::size_t, 2> readerLoads{};
             for (std::size_t cursor = 5; cursor < five.size();) {
                 const auto length = five[cursor] >> 16u;
@@ -2138,6 +2139,7 @@ void verifyBdaReadFallbackFunctions() {
                 }
                 if (op == spv::OpAtomicCompareExchange) ++compareExchanges;
                 if (op == spv::OpFunctionCall && function == "main" && names[five[cursor + 3]] == "get_bda_pointer") ++mainLookups;
+                if (op == spv::OpFunctionCall && function == "get_bda_pointer" && names[five[cursor + 3]] == "record_bda_fault") ++lookupFaultSites;
                 if (op == spv::OpFunctionCall && function == "main") {
                     const auto& callee = names[five[cursor + 3]];
                     if (callee == "probe_bda_pointer" || callee.starts_with("read_bda_dword_bytes")) ++mainProbes;
@@ -2149,6 +2151,7 @@ void verifyBdaReadFallbackFunctions() {
             require(definitions["record_bda_fault"] == 1u && definitions[reader] == 1u && definitions[span] == 1u, "BDA read functions: the fault, byte read and span read functions are not defined");
             for (const auto& [name, count] : definitions) require(count == 1u, "BDA read functions: a function is defined twice");
             require(compareExchanges == 1u, "BDA read functions: a fault is recorded outside record_bda_fault");
+            require(lookupFaultSites == 1u, "BDA read functions: get_bda_pointer does not record its faults from one call site");
             require(mainLookups == 0u, "BDA read functions: a read site looks up its bytes inline");
             require(readerLoads[coherent] == 4u && readerLoads[!coherent] == 0u, "BDA read functions: the byte loads do not keep the access's coherence");
             require(mainProbes == 0u, "BDA read functions: a read site probes or reads bytes outside its span read function");
