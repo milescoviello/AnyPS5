@@ -499,6 +499,12 @@ int main() {
     Require(unlink_nid_postfix(presentName.c_str()) == 0 && !std::filesystem::exists(present));
     const auto empty = root / "empty";
     Require(std::filesystem::create_directory(empty));
+    const auto emptyName = empty.string();
+    Require(rmdir_nid_postfix((emptyName + "/.").c_str()) == -1 && *__error_nid_postfix() == 22 && std::filesystem::is_directory(empty));
+    Require(rmdir_nid_postfix((emptyName + "/./").c_str()) == -1 && *__error_nid_postfix() == 22 && std::filesystem::is_directory(empty));
+    Require(sceKernelRmdir((emptyName + "/.").c_str()) == static_cast<int>(0x80020016u) && std::filesystem::is_directory(empty));
+    Require(remove_nid_postfix((emptyName + "/.").c_str()) == -1 && *__error_nid_postfix() == 22 && std::filesystem::is_directory(empty));
+    Require(sceKernelRmdir((rootName + "/.").c_str()) == static_cast<int>(0x80020016u));
     Require(rmdir_nid_postfix(empty.string().c_str()) == 0 && !std::filesystem::exists(empty));
     Require(remove_nid_postfix(root.string().c_str()) == 0);
     Require(!std::filesystem::exists(root));

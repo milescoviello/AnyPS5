@@ -76,6 +76,7 @@ extern "C" int APS5_VABI remove_nid_postfix(const char* path) {
     try {
         const auto resolved = ResolvePath_nid_no_patch(path);
         std::error_code error;
+        if (FinalPathComponentIsDot_nid_no_patch(path) && std::filesystem::is_directory(resolved, error)) { errno = 22; return -1; }
 #ifdef _WIN32
         const DWORD attributes = GetFileAttributesW(resolved.c_str());
         bool removed = false;

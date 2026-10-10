@@ -305,6 +305,13 @@ extern "C" std::filesystem::path ResolvePath_nid_no_patch(const char* path) {
     return Resolve(state, path);
 }
 
+extern "C" bool FinalPathComponentIsDot_nid_no_patch(const char* path) {
+    std::string_view text(path);
+    while (text.size() > 1 && (text.back() == '/' || text.back() == '\\')) text.remove_suffix(1);
+    const auto separator = text.find_last_of("/\\");
+    return text.substr(separator == std::string_view::npos ? 0 : separator + 1) == ".";
+}
+
 extern "C" int APS5_VABI chdir_nid_postfix(const char* path) {
     if (!path) { errno = 14; return -1; }
     if (!*path) { errno = 2; return -1; }
