@@ -393,6 +393,48 @@ void RunUntrackedReuse(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     Require(image->Refresh(), "the GPU-edited image was uploaded twice");
 }
 
+#ifndef _WIN32
+// An import window stamps the pages whose write protection it saw resolved as a possible CPU
+// store. A driver that pins imported pages for writing (NVIDIA on Linux) resolves it without
+// storing anything, which a store of the byte already there reproduces on any device.
+void RunImportWindow(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
+    auto* texels = block;
+    auto* keys = block + KeysOffset;
+    const auto surface = AddressOf(texels);
+    std::memset(texels, 0x55, SurfaceBytes);
+    std::memset(keys, 0x00, KeyBytes);
+    AgcDriver::GuestMemory::BumpCollectEpoch();
+    const auto texture = TextureDescriptor(texels, keys);
+    std::vector<std::uint32_t> writeData(16, 0u);
+    std::copy(texture.begin(), texture.end(), writeData.begin() + 4);
+    std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
+    Dispatch(device, WriteCode, writeData);
+    const auto image = StorageTexture::FindPending(surface, SurfaceBytes);
+    Require(image != nullptr, "import window: the written surface has no pending image");
+    if (!AgcDriver::GuestMemory::Watched(surface, SurfaceBytes)) {
+        std::puts("host imports are compared, not watched: the import window is not tested");
+        StorageTexture::FlushPending(surface, SurfaceBytes, nullptr, "test");
+        device.WaitIdle();
+        return;
+    }
+    const auto storeInWindow = [&](std::uint8_t value) {
+        auto* page = reinterpret_cast<volatile std::uint8_t*>(texels);
+        Require(AgcDriver::GuestMemory::ImportWatched(surface, SurfaceBytes, [&] {
+            page[0] = value;
+            return true;
+        }), "import window: the import failed");
+    };
+    const auto pendingVersion = image->Version();
+    storeInWindow(0x55);
+    Require(image->Refresh(), "import window: a pending image was uploaded again after an import that stored nothing new");
+    Require(image->Version() == pendingVersion && StorageTexture::FindPending(surface, SurfaceBytes) == image, "import window: an import that stored nothing new wrote the pending image back");
+    storeInWindow(0x66);
+    Require(!image->Refresh(), "import window: a CPU store within an import window was missed");
+    StorageTexture::FlushPending(surface, SurfaceBytes, nullptr, "test");
+    device.WaitIdle();
+}
+#endif
+
 #ifdef _WIN32
 void RunSharedImport(AgcDriver::VulkanDevice& device, std::uint8_t* block) {
     using namespace AgcDriver::GuestMemory;
@@ -432,6 +474,7 @@ int main() {
         std::optional<GuestBlock> watched;
         std::optional<GuestBlock> untracked;
         std::optional<GuestBlock> shared;
+        std::optional<GuestBlock> window;
         const auto device = OpenVulkanTestDevice();
         if (!device) return VulkanTestSkipped;
         block.emplace(false);
@@ -446,6 +489,10 @@ int main() {
         if (AgcDriver::GuestMemory::WriteWatched()) {
             watched.emplace(true);
             Run(*device, watched->Data());
+#ifndef _WIN32
+            window.emplace(true);
+            RunImportWindow(*device, window->Data());
+#endif
         } else {
             std::puts("guest memory has no write watch: a write-watched surface is not tested");
         }
