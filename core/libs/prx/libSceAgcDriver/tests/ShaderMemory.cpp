@@ -2514,7 +2514,7 @@ void verifyBdaReadFallbackFunctions() {
             require(compareExchanges == 1u, "BDA read functions: a fault is recorded outside record_bda_fault");
             require(mainLookups == 0u, "BDA read functions: a read site looks up its bytes inline");
             require(readerLoads[coherent] == 1u && readerLoads[!coherent] == 0u, "BDA read functions: the byte loads do not keep the access's coherence");
-            require(lookupFaults <= 4u, "BDA read functions: the page-table lookup records its faults from more than 4 call sites");
+            require(lookupFaults == 1u, "BDA read functions: the page-table lookup does not record its faults from one call site");
             require(lookupVariables == 0u, "BDA read functions: the page-table lookup keeps its search bounds in function variables");
             require(readerLookups == 1u, "BDA read functions: the byte read does not look up its bytes once, in a loop");
             require(mainProbes == 0u, "BDA read functions: a read site probes or reads bytes outside its span read function");
