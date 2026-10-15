@@ -561,6 +561,7 @@ void writeTessellationConfiguration(Writer& writer, const TessellationConfigurat
     writer.WriteU32(configuration.patchesPerGroup);
     writer.WriteU32(configuration.primitiveGroupSize);
     writer.WriteBool(configuration.breakAtInstance);
+    writer.WriteBool(configuration.mergedHull);
 }
 
 TessellationConfiguration readTessellationConfiguration(Reader& reader, std::uint32_t version) {
@@ -575,6 +576,7 @@ TessellationConfiguration readTessellationConfiguration(Reader& reader, std::uin
         configuration.primitiveGroupSize = reader.ReadU32();
         configuration.breakAtInstance = reader.ReadBool();
     }
+    if (version >= 35u) configuration.mergedHull = reader.ReadBool();
     return configuration;
 }
 
@@ -794,7 +796,7 @@ std::string RequestSerializer::Serialize(const RecompileRequest& request) const 
     std::string buffer;
     Writer writer(buffer);
     writer.WriteU32(0x41505335u);
-    writer.WriteU32(34u);
+    writer.WriteU32(35u);
     writeShaderBinary(writer, request.shader);
     writeGuestContext(writer, request.context);
     writeSpirvTarget(writer, request.target);
@@ -828,7 +830,7 @@ DeserializedRequest RequestSerializer::Deserialize(std::string_view text) const 
     Reader reader(decoded);
     if (reader.ReadU32() != 0x41505335u) throw std::runtime_error("invalid recompile request signature");
     const auto version = reader.ReadU32();
-    if (version < 1u || version > 34u) throw std::runtime_error("unsupported recompile request serialization version");
+    if (version < 1u || version > 35u) throw std::runtime_error("unsupported recompile request serialization version");
     DeserializedRequest result{};
     result.request.shader = readShaderBinary(reader, result.shaderCode, result.shaderHeader);
     result.request.context = readGuestContext(reader, result, version);
