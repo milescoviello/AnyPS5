@@ -193,6 +193,14 @@ void QueueTargetByteWrite(const Context& context, Recorder& recorder, std::uint6
     recorder.NotePendingWrite(address, 1u);
 }
 
+void QueueTargetFill(const Context& context, Recorder& recorder, std::uint64_t address, std::size_t bytes, std::uint32_t pattern) {
+    auto buffer = std::make_shared<Buffer>(context, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    context.Function<PFN_vkCmdFillBuffer>("vkCmdFillBuffer")(recorder.Commands(), buffer->Handle(), 0u, bytes, pattern);
+    recorder.Keep(buffer);
+    AgcDriver::GuestMemory::MarkWritten(address, bytes);
+    recorder.NotePendingWrite(address, bytes);
+}
+
 std::vector<std::uint32_t> FetchShader(std::uint32_t width, std::uint32_t height, std::uint32_t fragments, bool arrayed, bool floating) {
     ShaderRecompiler::SpirvModule module;
     module.EmitCapability(spv::CapabilityShader);
@@ -614,6 +622,7 @@ void CheckDrawFeedback() {
 }
 
 enum class ClearFault { None, PartialStore, CpuWrite, DepthWrite, BadMetadata, UnprovenDispatch, PendingWrite, Overlap };
+enum class ClearSource { HtileDispatch, Fill, QueuedFill };
 
 void CheckClearDispatch() {
     const std::array<std::uint32_t, 17> code{
@@ -662,7 +671,8 @@ void CheckClearDispatch() {
     }
 }
 
-void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments, bool one, bool clearing = false, std::optional<bool> depthOnlyOverride = std::nullopt, ClearFault fault = ClearFault::None, bool filling = false) {
+void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments, bool one, bool clearing = false, std::optional<bool> depthOnlyOverride = std::nullopt, ClearFault fault = ClearFault::None, ClearSource source = ClearSource::HtileDispatch) {
+    const bool filling = source != ClearSource::HtileDispatch;
     const VkExtent2D extent{5u, 3u};
     const auto bytes = static_cast<std::size_t>(MultisampledDepthBytes_nid_no_patch(extent, format == VK_FORMAT_D16_UNORM ? 2u : 4u, fragments));
     TargetMemory memory(bytes), metadata(65536u);
@@ -773,14 +783,23 @@ void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments,
                 Require(DepthSurfaceView(context, target) == view, "updating the native clear value replaced its attachment");
                 const std::uint32_t clearPattern = clearOne ? (depthOnly ? 0xfffffff0u : 0xfffc00f0u) : 0u;
                 const auto nativeBytes = fault == ClearFault::UnprovenDispatch ? 0u : static_cast<std::size_t>(metadataBytes);
-                if (filling) NoteDepthMetadataFill(target.htileAddress, static_cast<std::size_t>(metadataBytes), clearPattern);
-                else NoteHtileDepthClear(target.htileAddress, static_cast<std::size_t>(metadataBytes), nativeBytes);
-                if (fault == ClearFault::Overlap) NoteHtileDepthClear(target.htileAddress, static_cast<std::size_t>(metadataBytes), nativeBytes);
                 const auto storedBytes = fault == ClearFault::PartialStore ? 4u : static_cast<std::size_t>(metadataBytes);
-                AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, storedBytes, [&] {
-                    for (std::size_t i = 0u; i < storedBytes / 4u; ++i) std::memcpy(metadata.Data() + i * 4u, &clearPattern, 4u);
-                    if (fault == ClearFault::BadMetadata) metadata.Data()[0] = std::byte{0x0f};
-                });
+                if (source == ClearSource::QueuedFill) {
+                    const std::uint32_t queuedPattern = fault == ClearFault::BadMetadata ? 0x0fu : clearPattern;
+                    AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, static_cast<std::size_t>(metadataBytes), [&] {
+                        for (std::size_t i = 0u; i < metadataBytes / 4u; ++i) std::memcpy(metadata.Data() + i * 4u, &queuedPattern, 4u);
+                    });
+                    QueueTargetFill(context, recorder, target.htileAddress, static_cast<std::size_t>(metadataBytes), queuedPattern);
+                    NoteDepthMetadataFill(target.htileAddress, static_cast<std::size_t>(metadataBytes), queuedPattern);
+                } else {
+                    if (filling) NoteDepthMetadataFill(target.htileAddress, static_cast<std::size_t>(metadataBytes), clearPattern);
+                    else NoteHtileDepthClear(target.htileAddress, static_cast<std::size_t>(metadataBytes), nativeBytes);
+                    if (fault == ClearFault::Overlap) NoteHtileDepthClear(target.htileAddress, static_cast<std::size_t>(metadataBytes), nativeBytes);
+                    AgcDriver::GuestMemory::StoreOwnBytes(target.htileAddress, storedBytes, [&] {
+                        for (std::size_t i = 0u; i < storedBytes / 4u; ++i) std::memcpy(metadata.Data() + i * 4u, &clearPattern, 4u);
+                        if (fault == ClearFault::BadMetadata) metadata.Data()[0] = std::byte{0x0f};
+                    });
+                }
                 if (fault == ClearFault::CpuWrite) metadata.Data()[metadataBytes - 1u] ^= std::byte{0x01};
                 if (fault == ClearFault::DepthWrite) memory.Data()[bytes - 1u] ^= std::byte{0x01};
                 if (fault == ClearFault::PendingWrite) QueueTargetByteWrite(context, recorder, target.htileAddress, std::byte{0});
@@ -794,7 +813,7 @@ void CheckDepthTarget(Context context, VkFormat format, std::uint32_t fragments,
                 batch.SubmitAndWait();
                 check(false, 0.0f);
             }
-            std::printf("Native depth completed %s format=%d samples=%u depthOnly=%u value=%u cycles=3\n", filling ? "metadata fill" : "clear", format, fragments, depthOnly, one);
+            std::printf("Native depth completed %s format=%d samples=%u depthOnly=%u value=%u cycles=3\n", source == ClearSource::QueuedFill ? "queued metadata fill" : filling ? "metadata fill" : "clear", format, fragments, depthOnly, one);
         }
     }
     Require(std::all_of(memory.Data(), memory.Data() + bytes, [](auto value) { return value == std::byte{0xa5}; }), "native depth sampling silently published guest memory");
@@ -1249,6 +1268,14 @@ int main(int argc, char** argv) {
                 TargetRefuses([&] { CheckDepthTarget(context, VK_FORMAT_D32_SFLOAT, 4u, false, true, false, fault); }, expected);
                 std::printf("Native depth clear fault=%u refused: %s\n", static_cast<std::uint32_t>(fault), expected);
             }
+            for (const auto& [fault, expected] : std::array{
+                     std::pair{ClearFault::CpuWrite, "CPU writes raced"},
+                     std::pair{ClearFault::DepthWrite, "guest writes"},
+                     std::pair{ClearFault::BadMetadata, "does not prove its clear value"},
+                     std::pair{ClearFault::PendingWrite, "external GPU writes"}}) {
+                TargetRefuses([&] { CheckDepthTarget(context, VK_FORMAT_D32_SFLOAT, 4u, false, true, false, fault, ClearSource::QueuedFill); }, expected);
+                std::printf("Native depth queued fill fault=%u refused: %s\n", static_cast<std::uint32_t>(fault), expected);
+            }
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--clears") {
@@ -1256,10 +1283,10 @@ int main(int argc, char** argv) {
             std::uint32_t checked = 0u, unavailable = 0u;
             for (const auto format : {VK_FORMAT_D16_UNORM, VK_FORMAT_D32_SFLOAT}) {
                 for (const auto samples : {2u, 4u, 8u}) {
-                    if (!DepthSupported(context, format, samples)) { unavailable += 8u; continue; }
+                    if (!DepthSupported(context, format, samples)) { unavailable += 12u; continue; }
                     for (const bool depthOnly : {false, true}) {
                         for (const bool one : {false, true}) {
-                            for (const bool filling : {false, true}) { CheckDepthTarget(context, format, samples, one, true, depthOnly, ClearFault::None, filling); ++checked; }
+                            for (const auto source : {ClearSource::HtileDispatch, ClearSource::Fill, ClearSource::QueuedFill}) { CheckDepthTarget(context, format, samples, one, true, depthOnly, ClearFault::None, source); ++checked; }
                         }
                     }
                 }
