@@ -3049,6 +3049,13 @@ void multisampleTests() {
     Require(!cmask.TakeClear() && cmask.Keys() == DccKeys::Uncompressed, "a fill of another range changed the CMASK");
     cmask.CheckAddress(0x10000);
     expectFailure([&] { cmask.CheckAddress(0x20000); }, "used CMASK 0x20000");
+    for (unsigned value = 0; value < 256u; ++value) {
+        std::optional<DccKeys> expected;
+        if (value == 0u) expected = DccKeys::Clear0000;
+        else if (value == 0xccu || value == 0xddu || value == 0xeeu || value == 0xffu) expected = DccKeys::Uncompressed;
+        Require(AgcDriver::Graphics::MultisampledCmaskKeys(static_cast<std::uint8_t>(value)) == expected, "MSAA CMASK byte classification differs at " + std::to_string(value));
+    }
+    std::cout << "All 256 MSAA CMASK byte classifications passed\n";
     MultisampledCmask seeded(0x30000, 0x1000);
     seeded.SeedCode(0x00u);
     Require(seeded.TakeClear(), "a fast-cleared seed did not clear its first use");
