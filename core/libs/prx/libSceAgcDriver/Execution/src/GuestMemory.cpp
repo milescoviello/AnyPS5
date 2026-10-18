@@ -43,6 +43,18 @@
 #endif
 
 namespace AgcDriver::GuestMemory {
+static std::FILE* diagTraceFile() {
+    static std::FILE* file = [] { const char* path = std::getenv("APS5_DIAG_TRACE"); return path != nullptr ? std::fopen(path, "wb") : nullptr; }();
+    return file;
+}
+static void diagRecord(std::uint32_t kind, std::uint64_t from, std::uint64_t to, std::uint32_t flag, std::uint64_t block, std::uint64_t generation) {
+    auto* file = diagTraceFile();
+    if (file == nullptr) return;
+    struct Record { std::uint32_t kind, from, to, flag; std::uint64_t block, generation; } record{kind, static_cast<std::uint32_t>(from), static_cast<std::uint32_t>(to), flag, block, generation};
+    std::fwrite(&record, sizeof record, 1, file);
+    static std::uint32_t count = 0;
+    if ((++count & 4095) == 0) std::fflush(file);
+}
 namespace {
 void require(bool condition, const char* reason) {
     if (!condition) throw std::runtime_error(std::string("AGC driver: ") + reason);
@@ -953,6 +965,7 @@ struct WriteTracker {
         const auto begin = blockBegin(block);
         const auto from = static_cast<std::uint32_t>(std::max(address, begin) - begin);
         const auto to = static_cast<std::uint32_t>(std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin);
+        diagRecord(from == 0 && to == WriteBlockBytes ? 2 : 1, from, to, complete ? 1 : 0, block, stampGeneration);
         if (from == 0 && to == WriteBlockBytes) {
             auto& entry = driverPieces[block];
             if (complete) {
@@ -1124,6 +1137,7 @@ void watchPrivateMapping(std::uintptr_t address, std::size_t bytes, std::uint64_
     ++tracker.generation;
     tracker.noteCpuStore(address, address + bytes, tracker.generation);
     for (auto block = tracker.blockOf(address); block <= tracker.blockOf(address + bytes - 1); ++block) {
+        diagRecord(3, 0, 0, 0, block, 0);
         tracker.driverPieces.erase(block);
         tracker.stamp(block, tracker.generation, StampKind::Cpu);
     }
@@ -1412,6 +1426,7 @@ void Rewatch(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
         ++tracker.generation;
         tracker.noteCpuStore(begin, end, tracker.generation);
         for (auto block = tracker.blockOf(begin); block <= tracker.blockOf(end - 1); ++block) {
+            diagRecord(3, 0, 0, 0, block, 0);
             tracker.driverPieces.erase(block);
             tracker.stamp(block, tracker.generation, StampKind::Cpu);
         }
@@ -1656,6 +1671,7 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
         const auto found = tracker.driverPieces.find(block);
         if (found == tracker.driverPieces.end()) return true;
         const auto& entry = found->second;
+        { const auto qb = tracker.blockBegin(block); const auto qf = std::max(address, qb) - qb; const auto qt = std::min<std::uint64_t>(end, qb + WriteBlockBytes) - qb; bool answer = entry.whole > generation || entry.possibleWhole > generation; for (const auto& piece : entry.pieces) answer = answer || (piece.generation > generation && piece.begin < qt && qf < piece.end); for (const auto& piece : entry.possiblePieces) answer = answer || (piece.generation > generation && piece.begin < qt && qf < piece.end); for (const auto* ring : {&entry.forgotten, &entry.possibleForgotten}) for (const auto& piece : *ring) answer = answer || (piece.generation > generation && piece.begin < qt && qf < piece.end); diagRecord(4, qf, qt, answer ? 1 : 0, block, generation); }
         if (entry.whole > generation || entry.possibleWhole > generation) return true;
         const auto begin = tracker.blockBegin(block);
         const auto from = std::max(address, begin) - begin;
@@ -1697,6 +1713,7 @@ bool StoredAllSince_nid_no_patch(std::uint64_t address, std::size_t bytes, std::
         const auto start = tracker.blockBegin(block);
         const auto from = static_cast<std::uint32_t>(std::max(address, start) - start);
         const auto to = static_cast<std::uint32_t>(std::min<std::uint64_t>(end, start + WriteBlockBytes) - start);
+        diagRecord(6, from, to, found->second.covers(from, to, generation) ? 1 : 0, block, generation);
         if (!found->second.covers(from, to, generation)) return false;
     }
     return true;
