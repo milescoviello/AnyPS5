@@ -90,7 +90,8 @@ void CheckSharedBlock() {
 
     const auto many = TrackerGeneration();
     for (int store = 0; store < 6; ++store) MarkWritten(base + Block + static_cast<std::uint64_t>(store) * 64, 4);
-    Require(StoredOver(boundary, static_cast<std::size_t>(sharedSecond), many), "forgotten driver stores are taken as missing the range");
+    Require(!StoredOver(boundary, static_cast<std::size_t>(sharedSecond), many), "driver stores merged in the first surface's part count for the second surface's part");
+    Require(StoredOver(base + Block + 64, 4, many) && StoredOver(base + Block + 128, 64, many), "merged driver stores are not seen over their range");
 
     const auto beforeCpu = CollectWrites(base, 3 * Block);
     static_cast<volatile std::uint8_t*>(memory)[Block + 8] = 0x22;
@@ -256,13 +257,45 @@ void CheckRepeatedPossibleStores() {
     MarkPossiblyWritten(neighbour, 0x100);
     MarkPossiblyWritten(neighbour, 0x100);
     MarkPossiblyWritten(neighbour + 0x5000, 0x100);
-    Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), secondStored), "a full possible ring evicted a newer piece instead of its oldest");
-    Require(StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), freshSynced), "an evicted possible write is not taken as a store over the rest of the block");
+    Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), freshSynced), "possible writes merged in a full ring count for the rest of the block");
+    Require(StoredOver(neighbour + 0x1000, 0x100, freshSynced) && StoredOver(neighbour + 0x2000, 0x100, secondStored), "possible writes merged in a full ring are not seen over their range");
+    Require(!StoredOver(neighbour + 0x4000, 0x100, freshSynced), "a full possible ring merged distant pieces instead of the pair that raises the fewest bytes");
 
     const auto partial = TrackerGeneration();
     MarkPossiblyWritten(neighbour + 0x5080, 0x100);
     Require(StoredOver(neighbour + 0x5000, 0x10, settled) && StoredOver(neighbour + 0x5100, 0x10, partial), "a possible write that overlaps an earlier piece without containing it replaced it");
-    Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), thirdStored), "a possible write that overlaps without containing evicted a newer piece instead of the oldest");
+    Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), thirdStored), "a possible write that overlaps without containing counts for the rest of the block");
+}
+
+void CheckMergedPieces() {
+    void* memory = AllocateWatched(2 * Block);
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    const auto shared = base + Block;
+    std::memset(memory, 0x11, 2 * Block);
+    Require(CollectWrites(base, 2 * Block) != 0, "the test block is not collected");
+
+    MarkWritten(shared, 0xa000);
+    const auto uploaded = TrackerGeneration();
+    MarkWritten(shared + 0xa000, 8);
+    for (std::uint64_t store = 0; store < 5; ++store) MarkWritten(shared + 0xb000 + store * 0x200, 0x100);
+    Require(!StoredOver(shared, 0xa000, uploaded), "stores past a surface's end, merged in a full ring, count for the surface");
+    Require(StoredOver(shared + 0xa000, 8, uploaded) && StoredOver(shared + 0xb200, 0x100, uploaded), "stores past a surface's end are not seen over their range after a full ring merged them");
+    Require(StoredAllSince_nid_no_patch(shared, 0xa000, uploaded - 1), "merging stores past a surface's end lost the surface's own coverage");
+    Require(!StoredAllSince_nid_no_patch(shared + 0xb000, 0x100, uploaded), "a driver piece merged across a gap proves coverage");
+
+    void* fresh = AllocateWatched(2 * Block);
+    const auto freshBase = reinterpret_cast<std::uint64_t>(fresh);
+    std::memset(fresh, 0x11, 2 * Block);
+    Require(CollectWrites(freshBase, 2 * Block) != 0, "the second test block is not collected");
+    const auto label = freshBase + Block - 0x6000;
+    MarkWritten(freshBase, static_cast<std::size_t>(label - freshBase));
+    const auto cleared = TrackerGeneration();
+    for (int frame = 0; frame < 6; ++frame) {
+        MarkWritten(label, 8);
+        MarkWritten(label + 0x30, 0x10);
+        MarkWritten(label + 0x3000 + static_cast<std::uint64_t>(frame) * 0x400, 0x100);
+    }
+    Require(!StoredOver(freshBase, static_cast<std::size_t>(label - freshBase), cleared), "a label rewritten every frame past a surface's end counts for the surface");
 }
 
 void CheckOwnStore() {
@@ -1131,6 +1164,7 @@ int main() {
         CheckSharedBlock();
         CheckStoredAllSince();
         CheckRepeatedPossibleStores();
+        CheckMergedPieces();
         CheckOwnStore();
         CheckUnwatch();
         CheckNewestStamp();

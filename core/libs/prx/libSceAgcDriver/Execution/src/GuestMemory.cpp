@@ -877,22 +877,21 @@ struct WriteTracker {
         std::uint32_t generation = 0;
         std::uint32_t begin = 0;
         std::uint32_t end = 0;
+        std::uint32_t covered = 0;
     };
     struct DriverPieces {
         std::uint32_t whole = 0;
-        std::uint32_t dropped = 0;
         std::array<DriverPiece, 4> pieces{};
         std::uint32_t possibleWhole = 0;
-        std::uint32_t possibleDropped = 0;
         std::array<DriverPiece, 4> possiblePieces{};
 
         bool covers(std::uint32_t begin, std::uint32_t end, std::uint64_t generation) const {
-            if (generation == 0 || begin >= end || dropped > generation) return false;
+            if (generation == 0 || begin >= end) return false;
             if (whole > generation) return true;
             while (begin < end) {
                 auto covered = begin;
                 for (const auto& piece : pieces) {
-                    if (piece.generation > generation && piece.begin <= begin && piece.end > covered) covered = piece.end;
+                    if (piece.covered > generation && piece.begin <= begin && piece.end > covered) covered = piece.end;
                 }
                 if (covered == begin) return false;
                 begin = covered;
@@ -957,14 +956,12 @@ struct WriteTracker {
                 entry.whole = stampGeneration;
             } else {
                 entry.possibleWhole = stampGeneration;
-                entry.possibleDropped = 0;
                 entry.possiblePieces = {};
             }
             return;
         }
         auto& entry = driverPieces[block];
         auto& pieces = complete ? entry.pieces : entry.possiblePieces;
-        auto& dropped = complete ? entry.dropped : entry.possibleDropped;
         DriverPiece* contained = nullptr;
         for (auto& piece : pieces) {
             if (piece.generation == 0 || piece.begin < from || piece.end > to) continue;
@@ -972,15 +969,51 @@ struct WriteTracker {
             else piece = {};
         }
         if (contained != nullptr) {
-            *contained = {stampGeneration, from, to};
+            *contained = {stampGeneration, from, to, stampGeneration};
             return;
         }
-        auto* oldest = &pieces.front();
+        const DriverPiece added{stampGeneration, from, to, stampGeneration};
         for (auto& piece : pieces) {
-            if (piece.generation < oldest->generation) oldest = &piece;
+            if (piece.generation == 0) {
+                piece = added;
+                return;
+            }
         }
-        dropped = std::max(dropped, oldest->generation);
-        *oldest = {stampGeneration, from, to};
+        const auto candidate = [&](std::size_t index) -> const DriverPiece& { return index < pieces.size() ? pieces[index] : added; };
+        std::size_t first = 0;
+        std::size_t second = 1;
+        auto cheapest = std::numeric_limits<std::uint32_t>::max();
+        auto newest = std::numeric_limits<std::uint32_t>::max();
+        for (std::size_t one = 0; one <= pieces.size(); ++one) {
+            for (std::size_t other = one + 1; other <= pieces.size(); ++other) {
+                const auto& a = candidate(one);
+                const auto& b = candidate(other);
+                const auto raised = raisedBytes(a, b);
+                const auto generation = std::max(a.generation, b.generation);
+                if (raised < cheapest || (raised == cheapest && generation < newest)) {
+                    cheapest = raised;
+                    newest = generation;
+                    first = one;
+                    second = other;
+                }
+            }
+        }
+        const auto& a = candidate(first);
+        const auto& b = candidate(second);
+        const bool contiguous = std::max(a.begin, b.begin) <= std::min(a.end, b.end);
+        const DriverPiece merged{std::max(a.generation, b.generation), std::min(a.begin, b.begin), std::max(a.end, b.end), contiguous ? std::min(a.covered, b.covered) : 0u};
+        pieces[first] = merged;
+        if (second < pieces.size()) pieces[second] = added;
+    }
+
+    static std::uint32_t raisedBytes(const DriverPiece& a, const DriverPiece& b) {
+        const auto spanned = std::max(a.end, b.end) - std::min(a.begin, b.begin);
+        if (a.generation != b.generation) {
+            const auto& newer = a.generation > b.generation ? a : b;
+            return spanned - (newer.end - newer.begin);
+        }
+        const auto shared = std::min(a.end, b.end) > std::max(a.begin, b.begin) ? std::min(a.end, b.end) - std::max(a.begin, b.begin) : 0u;
+        return spanned + shared - (a.end - a.begin) - (b.end - b.begin);
     }
 
     std::uint32_t stampOf(std::uint64_t block) const {
@@ -1629,7 +1662,7 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
         const auto found = tracker.driverPieces.find(block);
         if (found == tracker.driverPieces.end()) return true;
         const auto& entry = found->second;
-        if (entry.whole > generation || entry.dropped > generation || entry.possibleWhole > generation || entry.possibleDropped > generation) return true;
+        if (entry.whole > generation || entry.possibleWhole > generation) return true;
         const auto begin = tracker.blockBegin(block);
         const auto from = std::max(address, begin) - begin;
         const auto to = std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin;
