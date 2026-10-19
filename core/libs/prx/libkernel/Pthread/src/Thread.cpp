@@ -747,8 +747,27 @@ struct GuestFiber {
 };
 
 static std::mutex spareFibersLock;
+static std::vector<GuestFiber*> finishedFibers;
 static std::vector<GuestFiber*> spareFibers;
+static std::size_t retainedFiberBytes = 0;
 static thread_local GuestFiber* currentFiber = nullptr;
+
+static constexpr std::size_t FiberCollectionBatch = 5;
+
+static std::size_t SpareFiberLimit() {
+    static const auto limit = [] {
+        MEMORYSTATUSEX status{};
+        status.dwLength = sizeof(status);
+        if (!GlobalMemoryStatusEx(&status) || status.ullTotalPhys == 0) return std::size_t{4u << 20};
+        return std::clamp<std::size_t>(static_cast<std::size_t>(status.ullTotalPhys / 1024), 4u << 20, 64u << 20);
+    }();
+    return limit;
+}
+
+static void DeleteGuestFiber(GuestFiber* fiber) {
+    DeleteFiber(fiber->fiber);
+    delete fiber;
+}
 
 static void RunNativeThread(std::unique_ptr<NativeThreadArgs> args) {
     auto* self = args->guest->self;
@@ -800,12 +819,51 @@ static void WINAPI GuestFiberMain(void* opaque) {
     }
 }
 
+static void CollectFinishedFiber(GuestFiber* fiber) {
+    std::vector<GuestFiber*> release;
+    {
+        std::lock_guard lock(spareFibersLock);
+        finishedFibers.push_back(fiber);
+        retainedFiberBytes += fiber->bytes;
+        if (finishedFibers.size() >= FiberCollectionBatch) {
+            spareFibers.insert(spareFibers.end(), finishedFibers.begin(), finishedFibers.end());
+            finishedFibers.clear();
+        }
+        const auto limit = SpareFiberLimit();
+        while (retainedFiberBytes > limit) {
+            auto& oldest = spareFibers.empty() ? finishedFibers : spareFibers;
+            retainedFiberBytes -= oldest.front()->bytes;
+            release.push_back(oldest.front());
+            oldest.erase(oldest.begin());
+        }
+    }
+    if (!release.empty()) {
+        static std::atomic_flag logged = ATOMIC_FLAG_INIT;
+        if (!logged.test_and_set(std::memory_order_relaxed))
+            std::fprintf(stderr, "scePthread: spare stack cache reached its host-memory limit; releasing cached stacks\n");
+        for (auto* stale : release) DeleteGuestFiber(stale);
+    }
+}
+
+static void ReleaseSpareFibers() {
+    std::vector<GuestFiber*> release;
+    {
+        std::lock_guard lock(spareFibersLock);
+        release.swap(spareFibers);
+        release.insert(release.end(), finishedFibers.begin(), finishedFibers.end());
+        finishedFibers.clear();
+        retainedFiberBytes = 0;
+    }
+    for (auto* fiber : release) DeleteGuestFiber(fiber);
+}
+
 static GuestFiber* TakeGuestFiber(std::size_t bytes) {
     {
         std::lock_guard lock(spareFibersLock);
         const auto found = std::find_if(spareFibers.begin(), spareFibers.end(), [bytes](const GuestFiber* fiber) { return fiber->bytes == bytes; });
         if (found != spareFibers.end()) {
             auto* fiber = *found;
+            retainedFiberBytes -= fiber->bytes;
             spareFibers.erase(found);
             return fiber;
         }
@@ -813,6 +871,10 @@ static GuestFiber* TakeGuestFiber(std::size_t bytes) {
     auto fiber = std::make_unique<GuestFiber>();
     fiber->bytes = bytes;
     fiber->fiber = CreateFiberEx(bytes, bytes, FIBER_FLAG_FLOAT_SWITCH, GuestFiberMain, fiber.get());
+    if (fiber->fiber == nullptr) {
+        ReleaseSpareFibers();
+        fiber->fiber = CreateFiberEx(bytes, bytes, FIBER_FLAG_FLOAT_SWITCH, GuestFiberMain, fiber.get());
+    }
     if (fiber->fiber == nullptr)
         throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Creating guest thread stack");
     return fiber.release();
@@ -837,10 +899,7 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
     currentFiber = fiber;
     SwitchToFiber(fiber->fiber);
     currentFiber = nullptr;
-    {
-        std::lock_guard lock(spareFibersLock);
-        spareFibers.push_back(fiber);
-    }
+    CollectFinishedFiber(fiber);
     ConvertFiberToThread();
     return 0;
 }

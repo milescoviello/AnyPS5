@@ -186,25 +186,41 @@ int main() {
     }
 #ifdef _WIN32
     constexpr std::size_t RetainedStackSize = 81920;
-    StackProbe joined{RetainedStackSize, 0x77000001u};
-    RunProbe(joined, ReturningStackWorker);
-    RequireRetained(joined);
-    StackProbe reused{RetainedStackSize, 0x77000002u};
-    RunProbe(reused, ReturningStackWorker);
-    Require(reused.stack == joined.stack && reused.seen == joined.marker);
-    RequireRetained(reused);
-    StackProbe exited{RetainedStackSize, 0x77000003u};
-    RunProbe(exited, ExitingStackWorker);
-    Require(exited.stack == joined.stack && exited.seen == reused.marker);
-    RequireRetained(exited);
-    StackProbe afterExit{RetainedStackSize, 0x77000004u};
-    RunProbe(afterExit, ReturningStackWorker);
-    Require(afterExit.stack == joined.stack && afterExit.seen == exited.marker);
-    StackProbe other{114688, 0x77000005u};
+    constexpr std::size_t RetainedThreads = 12;
+    constexpr std::size_t CollectionBatch = 5;
+    StackProbe probes[RetainedThreads];
+    std::size_t distinct = 0;
+    for (std::size_t i = 0; i < RetainedThreads; ++i) {
+        probes[i] = {RetainedStackSize, 0x77000000u + i};
+        RunProbe(probes[i], i % 2 == 0 ? ReturningStackWorker : ExitingStackWorker);
+        RequireRetained(probes[i]);
+        const StackProbe* previous = nullptr;
+        for (std::size_t j = 0; j < i; ++j)
+            if (probes[j].stack == probes[i].stack) previous = &probes[j];
+        if (previous == nullptr)
+            ++distinct;
+        else
+            Require(probes[i].seen == previous->marker);
+    }
+    Require(distinct <= CollectionBatch);
+    StackProbe other{114688, 0x77000100u};
     RunProbe(other, ReturningStackWorker);
-    Require(other.stack != joined.stack);
-    RequireRetained(afterExit);
     RequireRetained(other);
+    for (const auto& probe : probes) Require(probe.stack != other.stack);
+    constexpr std::size_t CacheCeiling = 64u << 20;
+    constexpr std::size_t VariedThreads = 17;
+    StackProbe varied[VariedThreads];
+    for (std::size_t i = 0; i < VariedThreads; ++i) {
+        varied[i] = {(4 + i) << 20, 0x77000200u + i};
+        RunProbe(varied[i], ReturningStackWorker);
+    }
+    std::size_t kept = 0;
+    for (const auto& probe : varied) {
+        MEMORY_BASIC_INFORMATION info{};
+        Require(VirtualQuery(reinterpret_cast<const void*>(probe.markerAddress), &info, sizeof(info)) == sizeof(info));
+        if (info.State == MEM_COMMIT && info.Protect == PAGE_READWRITE && *reinterpret_cast<const volatile std::uintptr_t*>(probe.markerAddress) == probe.marker) kept += probe.requested;
+    }
+    Require(kept <= CacheCeiling);
 #endif
 #ifdef __linux__
     Pthread detached = nullptr;
