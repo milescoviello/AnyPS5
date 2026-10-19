@@ -880,14 +880,17 @@ struct WriteTracker {
     };
     struct DriverPieces {
         std::uint32_t whole = 0;
-        std::uint32_t dropped = 0;
-        std::array<DriverPiece, 4> pieces{};
+        std::array<DriverPiece, 8> pieces{};
+        std::array<DriverPiece, 4> forgotten{};
         std::uint32_t possibleWhole = 0;
-        std::uint32_t possibleDropped = 0;
-        std::array<DriverPiece, 4> possiblePieces{};
+        std::array<DriverPiece, 8> possiblePieces{};
+        std::array<DriverPiece, 4> possibleForgotten{};
 
         bool covers(std::uint32_t begin, std::uint32_t end, std::uint64_t generation) const {
-            if (generation == 0 || begin >= end || dropped > generation) return false;
+            if (generation == 0 || begin >= end) return false;
+            for (const auto& range : forgotten) {
+                if (range.generation > generation && range.begin < end && begin < range.end) return false;
+            }
             if (whole > generation) return true;
             while (begin < end) {
                 auto covered = begin;
@@ -957,14 +960,14 @@ struct WriteTracker {
                 entry.whole = stampGeneration;
             } else {
                 entry.possibleWhole = stampGeneration;
-                entry.possibleDropped = 0;
                 entry.possiblePieces = {};
+                entry.possibleForgotten = {};
             }
             return;
         }
         auto& entry = driverPieces[block];
         auto& pieces = complete ? entry.pieces : entry.possiblePieces;
-        auto& dropped = complete ? entry.dropped : entry.possibleDropped;
+        auto& forgotten = complete ? entry.forgotten : entry.possibleForgotten;
         DriverPiece* contained = nullptr;
         for (auto& piece : pieces) {
             if (piece.generation == 0 || piece.begin < from || piece.end > to) continue;
@@ -979,8 +982,32 @@ struct WriteTracker {
         for (auto& piece : pieces) {
             if (piece.generation < oldest->generation) oldest = &piece;
         }
-        dropped = std::max(dropped, oldest->generation);
+        if (oldest->generation != 0) forget(forgotten, *oldest);
         *oldest = {stampGeneration, from, to};
+    }
+
+    static void forget(std::array<DriverPiece, 4>& ranges, const DriverPiece& piece) {
+        for (auto& range : ranges) {
+            if (range.generation == 0) {
+                range = piece;
+                return;
+            }
+        }
+        const auto older = [](const DriverPiece& a, const DriverPiece& b) { return std::tie(a.generation, a.begin, a.end) < std::tie(b.generation, b.begin, b.end); };
+        std::size_t first = 0;
+        for (std::size_t index = 1; index < ranges.size(); ++index) {
+            if (older(ranges[index], ranges[first])) first = index;
+        }
+        std::size_t second = first == 0 ? 1 : 0;
+        for (std::size_t index = 0; index < ranges.size(); ++index) {
+            if (index != first && older(ranges[index], ranges[second])) second = index;
+        }
+        if (older(piece, ranges[second])) {
+            ranges[first] = {std::max(ranges[first].generation, piece.generation), std::min(ranges[first].begin, piece.begin), std::max(ranges[first].end, piece.end)};
+            return;
+        }
+        ranges[first] = {std::max(ranges[first].generation, ranges[second].generation), std::min(ranges[first].begin, ranges[second].begin), std::max(ranges[first].end, ranges[second].end)};
+        ranges[second] = piece;
     }
 
     std::uint32_t stampOf(std::uint64_t block) const {
@@ -1629,7 +1656,7 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
         const auto found = tracker.driverPieces.find(block);
         if (found == tracker.driverPieces.end()) return true;
         const auto& entry = found->second;
-        if (entry.whole > generation || entry.dropped > generation || entry.possibleWhole > generation || entry.possibleDropped > generation) return true;
+        if (entry.whole > generation || entry.possibleWhole > generation) return true;
         const auto begin = tracker.blockBegin(block);
         const auto from = std::max(address, begin) - begin;
         const auto to = std::min<std::uint64_t>(end, begin + WriteBlockBytes) - begin;
@@ -1638,6 +1665,11 @@ bool StoredOver(std::uint64_t address, std::size_t bytes, std::uint64_t generati
         }
         for (const auto& piece : entry.possiblePieces) {
             if (piece.generation > generation && piece.begin < to && from < piece.end) return true;
+        }
+        for (const auto* ring : {&entry.forgotten, &entry.possibleForgotten}) {
+            for (const auto& piece : *ring) {
+                if (piece.generation > generation && piece.begin < to && from < piece.end) return true;
+            }
         }
     }
     return false;

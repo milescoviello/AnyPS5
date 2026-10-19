@@ -27,6 +27,7 @@ namespace {
 using namespace AgcDriver::GuestMemory;
 
 constexpr std::size_t Block = 65536;
+constexpr unsigned DriverPieceSlots = 8;
 #ifdef _WIN32
 constexpr wchar_t HostHoleMode[] = L"--host-hole";
 #endif
@@ -89,8 +90,9 @@ void CheckSharedBlock() {
     Require(!StoredOver(boundary, static_cast<std::size_t>(sharedSecond), afterWhole), "a partial store after a whole-block store is taken for the whole block");
 
     const auto many = TrackerGeneration();
-    for (int store = 0; store < 6; ++store) MarkWritten(base + Block + static_cast<std::uint64_t>(store) * 64, 4);
-    Require(StoredOver(boundary, static_cast<std::size_t>(sharedSecond), many), "forgotten driver stores are taken as missing the range");
+    for (std::uint64_t store = 0; store < DriverPieceSlots + 2; ++store) MarkWritten(base + Block + store * 64, 4);
+    Require(!StoredOver(boundary, static_cast<std::size_t>(sharedSecond), many), "driver stores forgotten in the first surface's part count for the second surface's part");
+    Require(StoredOver(base + Block + 64, 4, many) && StoredOver(base + Block + 128, 4, many), "forgotten driver stores are not seen over their range");
 
     const auto beforeCpu = CollectWrites(base, 3 * Block);
     static_cast<volatile std::uint8_t*>(memory)[Block + 8] = 0x22;
@@ -156,14 +158,14 @@ void CheckStoredAllSince() {
     Require(!StoredAllSince_nid_no_patch(base + 2048, 16, before), "repeated possible writes proved complete byte coverage");
 
     before = TrackerGeneration();
-    constexpr unsigned PossibleIntervals = 8;
+    constexpr unsigned PossibleIntervals = DriverPieceSlots + 4;
     auto beforeNewest = before;
     for (unsigned interval = 0; interval < PossibleIntervals; ++interval) {
         beforeNewest = TrackerGeneration();
         MarkPossiblyWritten(base + 4096 + static_cast<std::uint64_t>(interval) * 32, 16);
     }
-    Require(StoredOver(base + 4096, 16, before), "an evicted possible-write interval was forgotten instead of marking its block");
-    Require(StoredOver(base + 4096 + 16, 16, before), "an evicted possible write did not mark the rest of its block");
+    Require(StoredOver(base + 4096, 16, before), "an evicted possible-write interval is not seen over its own range");
+    Require(!StoredOver(base + 4096 + 16, 16, before), "an evicted possible write counts for the rest of its block");
     Require(StoredOver(base + 4096 + (PossibleIntervals - 1) * 32, 16, beforeNewest), "the newest possible-write interval was evicted");
     const auto beforeRecord = TrackerGeneration();
     MarkPossiblyWritten(base + 4096, 16);
@@ -195,7 +197,7 @@ void CheckStoredAllSince() {
     Require(!StoredAllSince_nid_no_patch(base + Block - 5, 9, before) && !StoredAllSince_nid_no_patch(base + Block - 4, 9, before), "a boundary store covers an unstored adjacent byte");
 
     before = TrackerGeneration();
-    for (unsigned piece = 0; piece < 6; ++piece) MarkWritten(base + static_cast<std::uint64_t>(piece) * 64, 4);
+    for (unsigned piece = 0; piece < DriverPieceSlots + 2; ++piece) MarkWritten(base + static_cast<std::uint64_t>(piece) * 64, 4);
     Require(!StoredAllSince_nid_no_patch(base, 4, before), "dropped driver evidence proves complete coverage");
     MarkWritten(base, Block);
     Require(StoredAllSince_nid_no_patch(base, Block, before), "a new whole-block store did not replace dropped evidence");
@@ -240,29 +242,75 @@ void CheckRepeatedPossibleStores() {
 
     const auto exact = TrackerGeneration();
     MarkWritten(base + Block, 0x100);
-    for (std::uint64_t store = 0; store < 5; ++store) MarkPossiblyWritten(boundary + store * 0x1000, 0x100);
+    for (std::uint64_t store = 0; store < DriverPieceSlots + 1; ++store) MarkPossiblyWritten(boundary + store * 0x1000, 0x100);
     Require(StoredAllSince_nid_no_patch(base + Block, 0x100, exact), "possible writes beyond the ring forgot an exact store's coverage");
 
     void* fresh = AllocateWatched(2 * Block);
     const auto freshBase = reinterpret_cast<std::uint64_t>(fresh);
     std::memset(fresh, 0x11, 2 * Block);
     const auto freshSynced = CollectWrites(freshBase, 2 * Block);
-    const auto neighbour = freshBase + Block - 0x9000;
-    MarkPossiblyWritten(neighbour, 0x100);
-    const auto secondStored = MarkPossiblyWritten(neighbour + 0x1000, 0x100);
-    const auto thirdStored = MarkPossiblyWritten(neighbour + 0x2000, 0x100);
-    MarkPossiblyWritten(neighbour + 0x3000, 0x100);
+    const auto neighbour = freshBase + Block - 0xa000;
+    std::array<std::uint64_t, DriverPieceSlots> stored{};
+    for (std::uint64_t piece = 0; piece < DriverPieceSlots; ++piece) stored[piece] = MarkPossiblyWritten(neighbour + piece * 0x1000, 0x100);
+    const auto secondStored = stored[1];
+    const auto thirdStored = stored[2];
     const auto settled = TrackerGeneration();
+    const auto latest = neighbour + DriverPieceSlots * 0x1000;
     MarkPossiblyWritten(neighbour, 0x100);
     MarkPossiblyWritten(neighbour, 0x100);
-    MarkPossiblyWritten(neighbour + 0x5000, 0x100);
+    MarkPossiblyWritten(latest, 0x100);
     Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), secondStored), "a full possible ring evicted a newer piece instead of its oldest");
-    Require(StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), freshSynced), "an evicted possible write is not taken as a store over the rest of the block");
+    Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), freshSynced), "an evicted possible write counts for the rest of the block");
+    Require(StoredOver(neighbour + 0x1000, 0x100, freshSynced) && !StoredOver(neighbour + 0x1000, 0x100, secondStored), "an evicted possible write is not seen over its own range at its own generation");
 
     const auto partial = TrackerGeneration();
-    MarkPossiblyWritten(neighbour + 0x5080, 0x100);
-    Require(StoredOver(neighbour + 0x5000, 0x10, settled) && StoredOver(neighbour + 0x5100, 0x10, partial), "a possible write that overlaps an earlier piece without containing it replaced it");
+    MarkPossiblyWritten(latest + 0x80, 0x100);
+    Require(StoredOver(latest, 0x10, settled) && StoredOver(latest + 0x100, 0x10, partial), "a possible write that overlaps an earlier piece without containing it replaced it");
     Require(!StoredOver(freshBase, static_cast<std::size_t>(neighbour - freshBase), thirdStored), "a possible write that overlaps without containing evicted a newer piece instead of the oldest");
+}
+
+void CheckForgottenPieces() {
+    void* memory = AllocateWatched(2 * Block);
+    const auto base = reinterpret_cast<std::uint64_t>(memory);
+    const auto shared = base + Block;
+    std::memset(memory, 0x11, 2 * Block);
+    Require(CollectWrites(base, 2 * Block) != 0, "the test block is not collected");
+
+    MarkWritten(shared, 0xa000);
+    const auto uploaded = TrackerGeneration();
+    MarkWritten(shared + 0xa000, 8);
+    for (std::uint64_t store = 0; store < DriverPieceSlots + 2; ++store) MarkWritten(shared + 0xb000 + store * 0x200, 0x100);
+    Require(!StoredOver(shared, 0xa000, uploaded), "stores past a surface's end, forgotten from a full ring, count for the surface");
+    Require(StoredOver(shared + 0xa000, 8, uploaded) && StoredOver(shared + 0xb200, 0x100, uploaded), "forgotten stores are not seen over their own range");
+    Require(!StoredOver(shared + 0xb100, 0x100, uploaded), "the gap between two forgotten stores reads as stored over");
+    MarkWritten(shared + 0xb000 + (DriverPieceSlots + 2) * 0x200, 0x100);
+    Require(!StoredOver(shared + 0xb100, 0x100, uploaded), "a full list of forgotten ranges merged newer ranges instead of its two oldest");
+    Require(StoredOver(shared + 0x5000, 0x10, uploaded), "the two oldest forgotten ranges, merged, are not seen over their hull with the newer generation");
+
+    void* fresh = AllocateWatched(2 * Block);
+    const auto freshBase = reinterpret_cast<std::uint64_t>(fresh);
+    std::memset(fresh, 0x11, 2 * Block);
+    Require(CollectWrites(freshBase, 2 * Block) != 0, "the second test block is not collected");
+    const auto before = TrackerGeneration();
+    for (std::uint64_t store = 0; store < DriverPieceSlots + 1; ++store) MarkWritten(freshBase + 0xb000 + store * 0x200, 0x100);
+    MarkWritten(freshBase, 0xa000);
+    Require(StoredAllSince_nid_no_patch(freshBase, 0xa000, before), "stores forgotten past a surface deny the surface's coverage");
+    Require(!StoredAllSince_nid_no_patch(freshBase + 0xb000, 0x100, before), "a forgotten store proves coverage");
+
+    void* labelled = AllocateWatched(2 * Block);
+    const auto labelledBase = reinterpret_cast<std::uint64_t>(labelled);
+    std::memset(labelled, 0x11, 2 * Block);
+    Require(CollectWrites(labelledBase, 2 * Block) != 0, "the third test block is not collected");
+    const auto label = labelledBase + Block - 0x6000;
+    MarkWritten(labelledBase, static_cast<std::size_t>(label - labelledBase));
+    const auto cleared = TrackerGeneration();
+    for (unsigned frame = 0; frame < DriverPieceSlots + 1; ++frame) {
+        MarkWritten(label, 8);
+        MarkWritten(label + 0x30, 0x10);
+        MarkWritten(label + 0x3000 + static_cast<std::uint64_t>(frame) * 0x400, 0x100);
+    }
+    Require(!StoredOver(labelledBase, static_cast<std::size_t>(label - labelledBase), cleared), "a label rewritten every frame past a surface's end counts for the surface");
+    Require(StoredOver(label, 8, cleared) && StoredOver(label + 0x3000, 0x100, cleared), "the label's own stores are not seen over their range");
 }
 
 void CheckOwnStore() {
@@ -1131,6 +1179,7 @@ int main() {
         CheckSharedBlock();
         CheckStoredAllSince();
         CheckRepeatedPossibleStores();
+        CheckForgottenPieces();
         CheckOwnStore();
         CheckUnwatch();
         CheckNewestStamp();
