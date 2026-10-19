@@ -734,11 +734,23 @@ struct NativeThreadArgs {
     std::unique_ptr<ThreadArgs> guest;
     std::future<bool> start;
     std::promise<void> initialized;
+    std::size_t stackBytes = 0;
 };
 
 #ifdef _WIN32
-static unsigned __stdcall StartNativeThread(void* opaque) {
-    std::unique_ptr<NativeThreadArgs> args(static_cast<NativeThreadArgs*>(opaque));
+struct GuestFiber {
+    void* fiber = nullptr;
+    std::size_t bytes = 0;
+    void* host = nullptr;
+    NativeThreadArgs* args = nullptr;
+    void* exitJump[5] = {};
+};
+
+static std::mutex spareFibersLock;
+static std::vector<GuestFiber*> spareFibers;
+static thread_local GuestFiber* currentFiber = nullptr;
+
+static void RunNativeThread(std::unique_ptr<NativeThreadArgs> args) {
     auto* self = args->guest->self;
     try {
         ULONG_PTR low = 0;
@@ -759,15 +771,77 @@ static unsigned __stdcall StartNativeThread(void* opaque) {
         args->initialized.set_value();
     } catch (...) {
         args->initialized.set_exception(std::current_exception());
-        return 0;
+        return;
     }
     if (!args->start.get())
-        return 0;
+        return;
     auto guest = std::move(args->guest);
     args.reset();
     RunThread(std::move(guest));
     CurrentGuestState().current = nullptr;
     ReleaseThread(self);
+}
+
+static void WINAPI GuestFiberMain(void* opaque) {
+    auto* fiber = static_cast<GuestFiber*>(opaque);
+    auto* tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+    auto** deallocation = reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(tib) + 0x1478);
+    void* const base = tib->StackBase;
+    void* const limit = tib->StackLimit;
+    void* const reserved = *deallocation;
+    for (;;) {
+        if (__builtin_setjmp(fiber->exitJump) == 0) RunNativeThread(std::unique_ptr<NativeThreadArgs>(std::exchange(fiber->args, nullptr)));
+        tib = reinterpret_cast<NT_TIB*>(NtCurrentTeb());
+        deallocation = reinterpret_cast<void**>(reinterpret_cast<std::uint8_t*>(tib) + 0x1478);
+        tib->StackBase = base;
+        tib->StackLimit = limit;
+        *deallocation = reserved;
+        SwitchToFiber(fiber->host);
+    }
+}
+
+static GuestFiber* TakeGuestFiber(std::size_t bytes) {
+    {
+        std::lock_guard lock(spareFibersLock);
+        const auto found = std::find_if(spareFibers.begin(), spareFibers.end(), [bytes](const GuestFiber* fiber) { return fiber->bytes == bytes; });
+        if (found != spareFibers.end()) {
+            auto* fiber = *found;
+            spareFibers.erase(found);
+            return fiber;
+        }
+    }
+    auto fiber = std::make_unique<GuestFiber>();
+    fiber->bytes = bytes;
+    fiber->fiber = CreateFiberEx(bytes, bytes, FIBER_FLAG_FLOAT_SWITCH, GuestFiberMain, fiber.get());
+    if (fiber->fiber == nullptr)
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Creating guest thread stack");
+    return fiber.release();
+}
+
+static unsigned __stdcall StartNativeThread(void* opaque) {
+    std::unique_ptr<NativeThreadArgs> args(static_cast<NativeThreadArgs*>(opaque));
+    void* host = nullptr;
+    GuestFiber* fiber = nullptr;
+    try {
+        host = ConvertThreadToFiberEx(nullptr, FIBER_FLAG_FLOAT_SWITCH);
+        if (host == nullptr)
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(), "Converting guest thread to a fiber");
+        fiber = TakeGuestFiber(args->stackBytes);
+    } catch (...) {
+        args->initialized.set_exception(std::current_exception());
+        if (host != nullptr) ConvertFiberToThread();
+        return 0;
+    }
+    fiber->host = host;
+    fiber->args = args.release();
+    currentFiber = fiber;
+    SwitchToFiber(fiber->fiber);
+    currentFiber = nullptr;
+    {
+        std::lock_guard lock(spareFibersLock);
+        spareFibers.push_back(fiber);
+    }
+    ConvertFiberToThread();
     return 0;
 }
 #else
@@ -839,9 +913,9 @@ int APS5_VABI scePthreadCreate(Pthread* thread, const PthreadAttr* attr, Pthread
     if (p->stackSize < 16384 || p->stackSize > std::numeric_limits<unsigned>::max() - HOST_STACK_MARGIN - system.dwPageSize)
         throw std::runtime_error("scePthreadCreate: invalid Windows stack size");
     const std::size_t nativeStack = (p->stackSize + HOST_STACK_MARGIN + system.dwPageSize - 1) / system.dwPageSize * system.dwPageSize;
-    auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}});
+    auto native = std::make_unique<NativeThreadArgs>(NativeThreadArgs{std::move(args), start.get_future(), {}, nativeStack});
     auto initialized = native->initialized.get_future();
-    const auto handle = _beginthreadex(nullptr, static_cast<unsigned>(nativeStack), StartNativeThread, native.get(), 0, nullptr);
+    const auto handle = _beginthreadex(nullptr, 0, StartNativeThread, native.get(), 0, nullptr);
     if (handle == 0)
         throw std::system_error(errno, std::generic_category(), "Creating guest thread");
     p->nativeHandle = reinterpret_cast<void*>(handle);
@@ -989,6 +1063,7 @@ void APS5_VABI scePthreadExit(void* retval) {
     CurrentGuestState().current = nullptr;
 #ifdef _WIN32
     ReleaseThread(self);
+    if (currentFiber != nullptr) __builtin_longjmp(currentFiber->exitJump, 1);
     _endthreadex(0);
 #else
     if (threadExitJump)

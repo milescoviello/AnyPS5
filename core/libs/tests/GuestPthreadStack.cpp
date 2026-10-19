@@ -9,6 +9,9 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -24,6 +27,9 @@ int APS5_VABI scePthreadAttrGetstack(const PthreadAttr* attr, void** stackAddres
 Pthread APS5_VABI scePthreadSelf();
 #ifdef __linux__
 int APS5_VABI scePthreadDetach(Pthread thread);
+#endif
+#ifdef _WIN32
+void APS5_VABI scePthreadExit(void* retval);
 #endif
 }
 
@@ -108,6 +114,61 @@ static void ObserveUnmap(std::uintptr_t address, std::size_t bytes) {
 }
 #endif
 
+#ifdef _WIN32
+struct StackProbe {
+    std::size_t requested = 0;
+    std::uintptr_t marker = 0;
+    std::uintptr_t stack = 0;
+    std::uintptr_t markerAddress = 0;
+    std::uintptr_t seen = 0;
+};
+
+static constexpr std::size_t MARKER_DEPTH = 16384;
+
+static void MarkStack(StackProbe& probe) {
+    PthreadAttr attr = nullptr;
+    Require(scePthreadAttrInit(&attr) == SCE_OK);
+    Require(scePthreadAttrGet(scePthreadSelf(), &attr) == SCE_OK);
+    void* address = nullptr;
+    std::size_t size = 0;
+    Require(scePthreadAttrGetstack(&attr, &address, &size) == SCE_OK);
+    Require(scePthreadAttrDestroy(&attr) == SCE_OK);
+    Require(size == probe.requested);
+    probe.stack = reinterpret_cast<std::uintptr_t>(address);
+    probe.markerAddress = probe.stack + size - MARKER_DEPTH;
+    probe.seen = *reinterpret_cast<volatile std::uintptr_t*>(probe.markerAddress);
+    *reinterpret_cast<volatile std::uintptr_t*>(probe.markerAddress) = probe.marker;
+}
+
+static void* APS5_VABI ReturningStackWorker(void* opaque) {
+    MarkStack(*static_cast<StackProbe*>(opaque));
+    return nullptr;
+}
+
+static void* APS5_VABI ExitingStackWorker(void* opaque) {
+    MarkStack(*static_cast<StackProbe*>(opaque));
+    scePthreadExit(nullptr);
+    return nullptr;
+}
+
+static void RunProbe(StackProbe& probe, PthreadEntry entry) {
+    PthreadAttr attr = nullptr;
+    Require(scePthreadAttrInit(&attr) == SCE_OK);
+    Require(scePthreadAttrSetstacksize(&attr, probe.requested) == SCE_OK);
+    Pthread thread = nullptr;
+    Require(scePthreadCreate(&thread, &attr, entry, &probe, nullptr) == SCE_OK);
+    Require(scePthreadAttrDestroy(&attr) == SCE_OK);
+    Require(scePthreadJoin(thread, nullptr) == SCE_OK);
+}
+
+static void RequireRetained(const StackProbe& probe) {
+    MEMORY_BASIC_INFORMATION info{};
+    Require(VirtualQuery(reinterpret_cast<const void*>(probe.markerAddress), &info, sizeof(info)) == sizeof(info));
+    Require(info.State == MEM_COMMIT && info.Protect == PAGE_READWRITE);
+    Require(*reinterpret_cast<const volatile std::uintptr_t*>(probe.markerAddress) == probe.marker);
+}
+#endif
+
 int main() {
 #ifdef __linux__
     GuestAllocations::GuestAllocationsSetUnmapObserver_nid_postfix(&ObserveUnmap);
@@ -123,6 +184,28 @@ int main() {
         Require(scePthreadJoin(thread, &result) == SCE_OK);
         Require(result == &stackSize);
     }
+#ifdef _WIN32
+    constexpr std::size_t RetainedStackSize = 81920;
+    StackProbe joined{RetainedStackSize, 0x77000001u};
+    RunProbe(joined, ReturningStackWorker);
+    RequireRetained(joined);
+    StackProbe reused{RetainedStackSize, 0x77000002u};
+    RunProbe(reused, ReturningStackWorker);
+    Require(reused.stack == joined.stack && reused.seen == joined.marker);
+    RequireRetained(reused);
+    StackProbe exited{RetainedStackSize, 0x77000003u};
+    RunProbe(exited, ExitingStackWorker);
+    Require(exited.stack == joined.stack && exited.seen == reused.marker);
+    RequireRetained(exited);
+    StackProbe afterExit{RetainedStackSize, 0x77000004u};
+    RunProbe(afterExit, ReturningStackWorker);
+    Require(afterExit.stack == joined.stack && afterExit.seen == exited.marker);
+    StackProbe other{114688, 0x77000005u};
+    RunProbe(other, ReturningStackWorker);
+    Require(other.stack != joined.stack);
+    RequireRetained(afterExit);
+    RequireRetained(other);
+#endif
 #ifdef __linux__
     Pthread detached = nullptr;
     Require(scePthreadCreate(&detached, nullptr, DetachedWorker, nullptr, nullptr) == SCE_OK);
