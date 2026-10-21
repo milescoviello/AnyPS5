@@ -382,30 +382,19 @@ VkStencilOpState stencilFace(std::uint32_t compare, std::uint32_t ops, std::uint
     return face;
 }
 
-void decodeDepth(const Registers& cx, std::uint32_t depthControl, bool testValExport, bool opValExport, State& result) {
-    const bool opValReference = opValExport && StencilOperationValueReplaces(cx);
-    zero(cx, 0x000, 0x0000101cu, "depth copy, resummarize or decompress draws (DB_RENDER_CONTROL)");
-    const bool depthClear = (read(cx, 0x000) & 1u) != 0;
-    const auto view = read(cx, 0x002);
-    zero(cx, 0x010, 0x00001000u, "partially resident depth (DB_Z_INFO)");
+DepthTarget decodeDepthPlane(const Registers& cx) {
+    const auto viewRegister = find(cx, 0x002);
+    const auto view = viewRegister == cx.end() ? 0u : viewRegister->second;
     const auto viewMip = (view >> 26u) & 0xfu;
     const auto maxMip = (read(cx, 0x010) >> 16u) & 0xfu;
-    zero(cx, 0x011, 0x00001000u, "partially resident stencil (DB_STENCIL_INFO)");
     const auto zFormat = read(cx, 0x010) & 3u;
-    const bool stencil = (read(cx, 0x011) & 1u) != 0;
-    const bool stencilClear = stencil && (read(cx, 0x000) & 2u) != 0;
-    Require(zFormat != 2, "Z_24 depth is unsupported");
-    if (zFormat == 0) depthControl &= ~6u;
-    if (!stencil) depthControl &= ~1u;
+    const auto stencilRegister = find(cx, 0x011);
+    const auto stencilInfo = stencilRegister == cx.end() ? 0u : stencilRegister->second;
+    const bool stencil = (stencilInfo & 1u) != 0;
     const auto base = [&](std::uint32_t low, std::uint32_t highOffset) {
         const auto high = find(cx, highOffset);
         return (high == cx.end() ? 0ull : static_cast<std::uint64_t>(high->second & 0xffu) << 40u) | (static_cast<std::uint64_t>(read(cx, low)) << 8u);
     };
-    const bool depthReadOnly = (view & 0x01000000u) != 0;
-    const bool stencilReadOnly = (view & 0x02000000u) != 0;
-    Require(!stencilClear || !stencilReadOnly, "stencil clear requires a writable stencil plane");
-    Require(!stencilClear || !testValExport, "stencil clear with a pixel shader that exports the stencil test value is unsupported");
-    Require(!depthClear || (zFormat != 0 && !depthReadOnly), "depth clear requires a writable depth plane");
     DepthTarget depth{};
     depth.samples = 1u << ((read(cx, 0x010) >> 2u) & 3u);
     depth.depthSwizzle = (read(cx, 0x010) >> 4u) & 31u;
@@ -414,9 +403,6 @@ void decodeDepth(const Registers& cx, std::uint32_t depthControl, bool testValEx
     depth.lastSlice = (view >> 13u) & 0x7ffu;
     depth.address = zFormat != 0 ? base(0x012, 0x01a) : 0;
     depth.stencilAddress = stencil ? base(0x013, 0x01b) : 0;
-    const bool depthWritten = zFormat != 0 && !depthReadOnly && (depthClear || (depthControl & 6u) == 6u || (read(cx, 0x000) & 0x60u) != 0);
-    Require(!depthWritten || base(0x014, 0x01c) == depth.address, "depth read and written at different addresses is unsupported");
-    Require(!stencil || stencilReadOnly || base(0x015, 0x01d) == depth.stencilAddress, "stencil read and written at different addresses is unsupported");
     if (depth.samples != 1u) {
         depth.pipeBankXor = static_cast<std::uint32_t>(depth.address & 65535u);
         depth.address &= ~std::uint64_t{65535u};
@@ -453,13 +439,44 @@ void decodeDepth(const Registers& cx, std::uint32_t depthControl, bool testValEx
         if (depth.stencilAddress != 0) depth.stencilAddress += static_cast<std::uint64_t>(slice) * DepthSliceBytes(depth.extent, 1u);
     }
     depth.format = zFormat == 1 ? (stencil ? VK_FORMAT_D16_UNORM_S8_UINT : VK_FORMAT_D16_UNORM) : (stencil ? VK_FORMAT_D32_SFLOAT_S8_UINT : VK_FORMAT_D32_SFLOAT);
-    depth.clearDepth = readFloat(cx, 0x00b);
-    depth.clearStencil = static_cast<std::uint8_t>(read(cx, 0x00a) & 0xffu);
-    depth.htileDepthOnly = (read(cx, 0x011) & (1u << 29u)) != 0u;
+    depth.htileDepthOnly = (stencilInfo & (1u << 29u)) != 0u;
     if (const auto htile = find(cx, 0x005); zFormat != 0 && htile != cx.end() && htile->second != 0 && (read(cx, 0x010) & (1u << 29u)) != 0) {
         depth.htileAddress = base(0x005, 0x01e) + static_cast<std::uint64_t>(view & 0x1fffu) * HtileMetadataBytes(depth.extent);
         depth.htileStencil = stencil && !depth.htileDepthOnly;
     }
+    return depth;
+}
+
+void decodeDepth(const Registers& cx, std::uint32_t depthControl, bool testValExport, bool opValExport, State& result) {
+    const bool opValReference = opValExport && StencilOperationValueReplaces(cx);
+    zero(cx, 0x000, 0x0000101cu, "depth copy, resummarize or decompress draws (DB_RENDER_CONTROL)");
+    const bool depthClear = (read(cx, 0x000) & 1u) != 0;
+    const auto view = read(cx, 0x002);
+    zero(cx, 0x010, 0x00001000u, "partially resident depth (DB_Z_INFO)");
+    zero(cx, 0x011, 0x00001000u, "partially resident stencil (DB_STENCIL_INFO)");
+    const auto zFormat = read(cx, 0x010) & 3u;
+    const bool stencil = (read(cx, 0x011) & 1u) != 0;
+    const bool stencilClear = stencil && (read(cx, 0x000) & 2u) != 0;
+    Require(zFormat != 2, "Z_24 depth is unsupported");
+    if (zFormat == 0) depthControl &= ~6u;
+    if (!stencil) depthControl &= ~1u;
+    const auto base = [&](std::uint32_t low, std::uint32_t highOffset) {
+        const auto high = find(cx, highOffset);
+        return (high == cx.end() ? 0ull : static_cast<std::uint64_t>(high->second & 0xffu) << 40u) | (static_cast<std::uint64_t>(read(cx, low)) << 8u);
+    };
+    const bool depthReadOnly = (view & 0x01000000u) != 0;
+    const bool stencilReadOnly = (view & 0x02000000u) != 0;
+    Require(!stencilClear || !stencilReadOnly, "stencil clear requires a writable stencil plane");
+    Require(!stencilClear || !testValExport, "stencil clear with a pixel shader that exports the stencil test value is unsupported");
+    Require(!depthClear || (zFormat != 0 && !depthReadOnly), "depth clear requires a writable depth plane");
+    const auto readAddress = zFormat != 0 ? base(0x012, 0x01a) : 0;
+    const auto stencilReadAddress = stencil ? base(0x013, 0x01b) : 0;
+    const bool depthWritten = zFormat != 0 && !depthReadOnly && (depthClear || (depthControl & 6u) == 6u || (read(cx, 0x000) & 0x60u) != 0);
+    Require(!depthWritten || base(0x014, 0x01c) == readAddress, "depth read and written at different addresses is unsupported");
+    Require(!stencil || stencilReadOnly || base(0x015, 0x01d) == stencilReadAddress, "stencil read and written at different addresses is unsupported");
+    auto depth = decodeDepthPlane(cx);
+    depth.clearDepth = readFloat(cx, 0x00b);
+    depth.clearStencil = static_cast<std::uint8_t>(read(cx, 0x00a) & 0xffu);
     result.depth = depth;
     result.depthTest = (depthControl & 2u) != 0;
     result.depthWrite = result.depthTest && (depthControl & 4u) != 0 && !depthReadOnly;
@@ -1988,28 +2005,20 @@ std::optional<DepthCopyPass> DecodeDepthCopyPass(const QueueState& queue) {
     Require((control->second & ~0xf84u) == 0, "DB depth copy combined with a stencil copy, clear, resummarize or decompress");
     Require((read(cx, 0x200) & 0xfu) == 0, "DB depth copy with depth or stencil tests");
     Require((read(cx, 0x010) & 3u) == 3u, "DB depth copy from a depth plane that is not Z_32_FLOAT");
-    Require(ColorWriteMask(cx) == 1u, "DB depth copy into anything but the red channel of color target 0");
     const auto viewRegister = find(cx, 0x002);
-    const auto view = viewRegister == cx.end() ? 0u : viewRegister->second;
-    Require((read(cx, 0x010) & 0x000f1000u) == 0 && (view & 0x3c000000u) == 0, "DB depth copy from a mipmapped or partially resident depth plane");
+    Require((read(cx, 0x010) & 0x000f1000u) == 0 && ((viewRegister == cx.end() ? 0u : viewRegister->second) & 0x3c000000u) == 0, "DB depth copy from a mipmapped or partially resident depth plane");
+    Require(ColorWriteMask(cx) == 1u, "DB depth copy into anything but the red channel of color target 0");
+    Require((read(cx, 0x1e0) & (1u << 30u)) == 0, "DB depth copy with color target 0 blending is unsupported");
     DepthCopyPass pass{};
-    const auto high = find(cx, 0x01a);
-    pass.depthAddress = (high == cx.end() ? 0ull : static_cast<std::uint64_t>(high->second & 0xffu) << 40u) | (static_cast<std::uint64_t>(read(cx, 0x012)) << 8u);
-    const auto size = read(cx, 0x007);
-    pass.extent = {(size & 0x3fffu) + 1u, ((size >> 16u) & 0x3fffu) + 1u};
-    pass.samples = 1u << ((read(cx, 0x010) >> 2u) & 3u);
-    if (pass.samples != 1u) pass.depthAddress &= ~std::uint64_t{65535u};
-    if (const auto slice = view & 0x1fffu; slice != 0) pass.depthAddress += static_cast<std::uint64_t>(slice) * DepthSliceBytes(pass.extent, 4u);
+    pass.source = decodeDepthPlane(cx);
     const auto maskLow = find(cx, 0x30e);
     const auto maskHigh = find(cx, 0x30f);
     Require((maskLow == cx.end() || maskLow->second == 0xffffffffu) && (maskHigh == cx.end() || maskHigh->second == 0xffffffffu), "DB depth copy with a sample mask is unsupported");
     pass.sample = (control->second & 0x80u) != 0 ? 0u : (control->second >> 8u) & 0xfu;
-    Require(pass.sample < pass.samples, "DB depth copy of a sample the depth plane does not have");
+    Require(pass.sample < pass.source.samples, "DB depth copy of a sample the depth plane does not have");
     pass.color = DecodeColorBuffer(cx, 0);
     Require(pass.color.format == VK_FORMAT_R32_SFLOAT && pass.color.samples == 1 && pass.color.mip == 0 && pass.color.layers == 1, "DB depth copy into a color target that is not a single-sample R32 float");
-    Require(pass.color.extent.width == pass.extent.width && pass.color.extent.height == pass.extent.height, "DB depth copy into a color target of another size");
-    Require(pass.color.cmaskAddress == 0, "DB depth copy into a color target with CMASK fast clears is unsupported");
-    Require(drawCovers(cx, pass.extent), "DB depth copy over part of the depth surface");
+    Require(pass.color.extent.width == pass.source.extent.width && pass.color.extent.height == pass.source.extent.height, "DB depth copy into a color target of another size");
     return pass;
 }
 
