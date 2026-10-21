@@ -12,6 +12,7 @@
 #include <exception>
 #include <initializer_list>
 #include <iostream>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -33,7 +34,10 @@ alignas(256) constexpr std::array<std::uint32_t, 16> VertexCode{
 alignas(256) constexpr std::array<std::uint32_t, 4> WhitePixelCode{0x7e0e02f2u, 0xf800180fu, 0x07070707u, 0xbf810000u};
 alignas(256) std::array<float, Width * Height> CopyTarget{};
 alignas(256) std::array<float, Width * Height> ReferenceTarget{};
-alignas(65536) std::array<float, 16384> DepthMemory{};
+constexpr std::size_t DepthFloats = 16384;
+constexpr std::size_t DepthAlignment = 65536;
+std::array<float, DepthFloats + DepthAlignment / sizeof(float)> DepthStorage{};
+const std::span<float, DepthFloats> DepthMemory{reinterpret_cast<float*>((reinterpret_cast<std::uintptr_t>(DepthStorage.data()) + DepthAlignment - 1) & ~(DepthAlignment - 1)), DepthFloats};
 
 struct Header {
     Shader shader{};
@@ -78,6 +82,7 @@ void AppendDraw(std::vector<std::uint32_t>& commands, const DrawOptions& options
     const auto pixel = reinterpret_cast<std::uintptr_t>(WhitePixelCode.data());
     const auto color = reinterpret_cast<std::uintptr_t>(options.color);
     const auto depth = reinterpret_cast<std::uintptr_t>(DepthMemory.data());
+    Require(depth % DepthAlignment == 0, "the test depth plane is not 64 KiB aligned");
     const std::vector<std::pair<std::uint32_t, std::uint32_t>> context{
         {0x2d5, 0x2000},
         {0x1b3, 0x2}, {0x1b4, 0x2}, {0x1b6, 0}, {0x207, 0}, {0x200, options.depthControl}, {0x203, 0},
@@ -118,7 +123,7 @@ void AppendDraw(std::vector<std::uint32_t>& commands, const DrawOptions& options
 void CopyCoversTheDraw() {
     CopyTarget.fill(Untouched);
     ReferenceTarget.fill(Untouched);
-    DepthMemory.fill(MemoryDepth);
+    std::ranges::fill(DepthMemory, MemoryDepth);
     Registered(VertexHeader, VertexCode.data(), sizeof(VertexCode), 2);
     Registered(PixelHeader, WhitePixelCode.data(), sizeof(WhitePixelCode), 1);
     std::vector<std::uint32_t> commands;
