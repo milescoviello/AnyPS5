@@ -1198,6 +1198,51 @@ void AbiDeferredRectanglePairs() {
     ExpectFailure([] { AgcDriverShutdown_nid_postfix(); }, "custom per-vertex interpolation is unsupported");
 }
 
+void CommittedAbis() {
+    static AbiHeader front;
+    static AbiHeader pixel;
+    DescribeFront(front);
+    DescribeAbi(pixel, PassthroughPixelCode, 1, {{0x8, ProgramLow(PassthroughPixelCode.data())}, {0x9, ProgramHigh(PassthroughPixelCode.data())}, {0xa, 0}, {0xb, 0}}, {{0x1b6, 1}, {0x1b3, 2}, {0x1b4, 2}, {0x191, 0}, {0x1c5, 4}});
+    for (auto* header : {&front, &pixel}) AgcDriverRegisterShader_nid_postfix(&header->shader);
+    const std::array<const Shader*, 2> stages{&front.shader, &pixel.shader};
+    const std::array<ShaderRegister, 1> primitive{{{0x242, 4}}};
+    const std::array<ShaderRegister, 1> interpolant{{{0x191, 0x20}}};
+    const auto resolve = [&] {
+        AgcDriver::ShaderPreparationScope scope({&front.shader, &pixel.shader});
+        AgcDriverResolveShaderAbi_nid_postfix(&pixel.shader, {}, {});
+        AgcDriverResolveGraphicsStagesAbi_nid_postfix(stages, {}, primitive);
+        AgcDriverResolveGraphicsAbi_nid_postfix(&front.shader, &pixel.shader, 0);
+        scope.Commit();
+    };
+    const auto resolveOther = [&] {
+        AgcDriver::ShaderPreparationScope scope({&pixel.shader});
+        AgcDriverResolveShaderAbi_nid_postfix(&pixel.shader, interpolant, {});
+        scope.Commit();
+    };
+    resolve();
+    const auto before = ShaderRecompiler::FrontEndBuilds();
+    bool unblocked = false;
+    bool excluded = false;
+    std::uint64_t repeatedBuilds = 0;
+    std::future<void> repeated;
+    std::future<void> other;
+    {
+        AgcDriver::DriverDetail::ShaderSnapshot unrelated{};
+        AgcDriver::DriverDetail::ShaderPreparationTransaction open;
+        static_cast<void>(open.Read(unrelated));
+        repeated = std::async(std::launch::async, resolve);
+        unblocked = repeated.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+        repeatedBuilds = ShaderRecompiler::FrontEndBuilds() - before;
+        other = std::async(std::launch::async, resolveOther);
+        excluded = other.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout;
+        open.Commit();
+    }
+    repeated.get();
+    other.get();
+    Require(unblocked && repeatedBuilds == 0, "resolving ABIs the shaders already had waited for another thread's shader preparation, or prepared them again");
+    Require(excluded, "a new ABI was published beside a shader preparation that had read prepared state");
+}
+
 void RelocatedHeaders() {
     alignas(256) static const std::array<std::uint32_t, 11> code{0x7e0002ffu, 0, 0x7e0202ffu, 0, 0x7e0402ffu, 0, 0x7e0602ffu, 0x3f800000u, 0xf80008cfu, 0x03020100u, 0xbf810000u};
     struct Header {
@@ -1318,6 +1363,7 @@ int main(int argc, char** argv) {
         device.reset();
         SharedCodeHeaders();
         RelocatedHeaders();
+        CommittedAbis();
         RegistrationWithoutSpecials();
         Registration(argc == 2);
         std::cout << "prepared shader and transactional registration tests passed\n";
