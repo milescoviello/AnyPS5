@@ -480,7 +480,7 @@ struct PageSpan {
                 for (; index < next; ++index, ++at) storeByte(at, value);
             } else index = next;
         }
-        settle(begin, end);
+        if (value != 0) settle(begin, end);
     }
 
     // End of the run of pages equal to `value` that starts at `address`, at most `limit`.
