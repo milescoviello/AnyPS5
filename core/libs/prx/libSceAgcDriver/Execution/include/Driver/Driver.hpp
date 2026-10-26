@@ -123,6 +123,7 @@ private:
     static void copyCommands(Submission& submission, const std::uint32_t* guest, std::size_t words);
     static bool copySegment(Submission& submission, const std::uint32_t* guest, std::size_t words, std::size_t& budget);
     static void readRegisterLists(Submission& submission);
+    bool refreshIndirectSegment(Submission& submission, std::size_t index);
     void waitForFlipRoom(const Submission& submission);
     void holdFlipBehindWorker(const Submission& submission);
     bool awaitsTitle(std::uint64_t awaited) const;
@@ -360,7 +361,7 @@ private:
     static void timed(double WorkerProfile::*bucket, TWork&& work);
     FrameTiming* frameTiming();
     FrameTiming* includeTimingSubmission(const Submission& submission, bool firstSegment);
-    void execute(const Submission& submission);
+    void execute(Submission& submission);
     void deliverGuestEopInterrupt(std::uint32_t queue);
     void deliverFlipEopInterrupt(std::uint32_t queue);
     void markCompleted(std::uint64_t serial);
@@ -443,6 +444,7 @@ private:
         std::shared_ptr<IFlipRequest> request;
     };
     std::map<std::uint32_t, EopFlip> eopFlips;
+    std::set<std::pair<std::uint32_t, std::uint32_t>> renderingWaitTargets;
     std::uint32_t nextEopToken = EopFlipTokenBase;
     DevicePointer device;
 
