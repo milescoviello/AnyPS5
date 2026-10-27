@@ -4995,6 +4995,22 @@ std::uint64_t& DeviceProcLookups() {
     return count;
 }
 
+void DeviceProcLookupTimed(std::chrono::steady_clock::time_point start) {
+    static const bool enabled = std::getenv("APS5_DIAG_PROC_TIME") != nullptr;
+    if (!enabled) return;
+    const auto end = std::chrono::steady_clock::now();
+    static std::atomic<std::uint64_t> nanoseconds{0};
+    static std::atomic<std::uint64_t> lookups{0};
+    static std::atomic<std::int64_t> printed{0};
+    const auto elapsed = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    const auto total = nanoseconds.fetch_add(elapsed) + elapsed;
+    const auto count = lookups.fetch_add(1) + 1;
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(end.time_since_epoch()).count();
+    auto last = printed.load();
+    if (now - last < 10000 || !printed.compare_exchange_strong(last, now)) return;
+    std::fprintf(stderr, "[proc-time] %llu lookups by name, %.3f ms in vkGetDeviceProcAddr\n", static_cast<unsigned long long>(count), static_cast<double>(total) / 1e6);
+}
+
 std::uint32_t ImageTableCapacity(const Context& context) {
     const auto capacity = ImageTableCapacityFor(context, false);
     return capacity != 0u ? capacity : ImageTableCapacityFor(context, true);

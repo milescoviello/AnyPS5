@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
@@ -145,6 +146,7 @@ struct DeviceFunctions {
 
 // Per-thread count of vkGetDeviceProcAddr lookups made through Context::Function (the [vk] line).
 std::uint64_t& DeviceProcLookups();
+void DeviceProcLookupTimed(std::chrono::steady_clock::time_point start);
 
 inline constexpr std::size_t EmptyBufferBytes = 16;
 
@@ -281,7 +283,9 @@ struct Context {
     TFunction Function(const char* name) const {
         Require(deviceProc != nullptr, "missing Vulkan device function resolver");
         ++DeviceProcLookups();
+        const auto lookupStart = std::chrono::steady_clock::now();
         const auto function = reinterpret_cast<TFunction>(deviceProc(device, name));
+        DeviceProcLookupTimed(lookupStart);
         if (function == nullptr) throw std::runtime_error(std::string("AGC graphics: missing Vulkan function: ") + name);
         return function;
     }

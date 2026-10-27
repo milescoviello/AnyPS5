@@ -581,7 +581,9 @@ struct VulkanDevice::State {
     template<typename TFunction>
     TFunction DeviceFunction(const char* name) const {
         ++Graphics::DeviceProcLookups();
+        const auto lookupStart = std::chrono::steady_clock::now();
         auto function = reinterpret_cast<TFunction>(deviceProc(device, name));
+        Graphics::DeviceProcLookupTimed(lookupStart);
         if (function == nullptr) {
             throw std::runtime_error(std::string("Vulkan device function missing: ") + name);
         }
