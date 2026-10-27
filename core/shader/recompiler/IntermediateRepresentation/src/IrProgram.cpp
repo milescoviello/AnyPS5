@@ -315,7 +315,7 @@ IrBlock& IrProgram::CreateBlock() {
 }
 
 IrValue& IrProgram::CreateValue(IrOpcode opcode, IrType type) {
-    auto value = std::make_unique<IrValue>(opcode, type, nextValueId);
+    auto value = std::make_unique<IrValue>(opcode, type, nextValueId, useArena.Resource());
     nextValueId++;
     IrValue& created = *value;
     values.push_back(std::move(value));

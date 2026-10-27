@@ -38,6 +38,7 @@ public:
 private:
     std::shared_ptr<std::pmr::memory_resource> instructionNodes;
     std::vector<std::unique_ptr<IrBlock>> blocks;
+    IrUseArena useArena;
     std::vector<IrBlock*> blockOrder;
     std::vector<std::unique_ptr<IrValue>> values;
     IrResourcePlan resourcePlan;
