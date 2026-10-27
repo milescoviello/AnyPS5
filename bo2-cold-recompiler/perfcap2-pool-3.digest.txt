@@ -1,0 +1,71 @@
+2254 frames over 149811.4 ms (no summary line found)
+
+**Slowest frames** (largest slices inside each, inclusive)
+
+- present 730: 1323.6 ms at 12313 ms: Shader.ResolveAbi (title) 1821.0, Shader.PrepareArtifact (title) 1172.5, Vulkan.GraphicsPipelinePrebuild (shader prepare) 1040.3, Vulkan.GraphicsPipeline (shader prepare) 1035.9
+- present 1780: 927.2 ms at 90393 ms: Shader.ResolveAbi (title) 582.1, Shader.PrepareArtifact (title) 536.0, batch (gpu) 232.6, VideoOut.Flip (presenter) 20.9
+- present 1784: 769.5 ms at 91780 ms: Shader.ResolveAbi (title) 1021.1, Shader.PrepareArtifact (title) 938.1, batch (gpu) 66.8, VideoOut.Flip (presenter) 23.4
+- present 740: 462.6 ms at 15373 ms: Shader.ResolveAbi (title) 246.5, Driver.WorkerWait (queue worker 0x0) 210.2, Driver.WorkerWait.idle_and_completion_poll (queue worker 0x0) 210.2, Driver.Packet (queue worker 0x0) 204.6
+- present 731: 459.7 ms at 13637 ms: Shader.ResolveAbi (title) 570.7, Shader.PrepareArtifact (title) 390.8, Vulkan.GraphicsPipelinePrebuild (shader prepare) 251.4, Vulkan.GraphicsPipeline (shader prepare) 250.8
+
+**Threads** (ms per frame)
+
+| thread | busy | wait | untraced | in slices < 20 us | largest |
+|---|---|---|---|---|---|
+| title | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.Register 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 66.4 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| title | 1.0 (1 %) | 0.0 (0 %) | 65.5 | 3.8 | Shader.ResolveAbi 0.7, Shader.ResolveGraphicsAbi 0.2 |
+| title | 0.7 (1 %) | 0.0 (0 %) | 65.8 | 3.0 | Shader.ResolveAbi 0.4, Shader.ResolveGraphicsAbi 0.2 |
+| queue worker 0x0 | 4.7 (7 %) | 5.6 (8 %) | 56.2 | 5.8 | Driver.Packet 8.4, Driver.EndSubmission 0.1 |
+| draw committer | 8.9 (13 %) | 0.0 (0 %) | 57.6 | 7.4 | Graphics.Draw 8.8, Recorder.Submit 0.1 |
+| presenter | 0.3 (0 %) | 14.6 (22 %) | 51.6 | 0.1 | VideoOut.Flip 14.9, Driver.Present 0.0 |
+| title | 1.0 (1 %) | 0.0 (0 %) | 65.5 | 3.9 | Shader.ResolveAbi 0.7, Shader.ResolveGraphicsAbi 0.2 |
+| title | 1.2 (2 %) | 0.0 (0 %) | 65.3 | 3.9 | Shader.ResolveAbi 0.9, Shader.ResolveGraphicsAbi 0.2 |
+| title | 1.1 (2 %) | 0.0 (0 %) | 65.4 | 3.9 | Shader.ResolveAbi 0.8, Shader.ResolveGraphicsAbi 0.2 |
+| gpu | 18.6 (28 %) | 0.0 (0 %) | 47.9 | 0.0 | batch 18.6 |
+
+**Largest slices** (ms per frame, inclusive, all threads): batch 18.6, VideoOut.Flip 14.9, VideoOut.Flip.vblank_wait 9.9, Graphics.Draw 8.8, Graphics.Draw.draw_and_resource_release 8.4, Driver.Packet 8.4, VideoOut.Flip.present 5.0, Driver.Present 5.0, Driver.Present.render_fence_wait 4.7, Vulkan.Retire 4.7
+
+**Longest waits**
+
+- Driver.WorkerWait (queue worker 0x0) 514.9 ms at 12423 ms, present 730
+- Driver.WorkerWait (queue worker 0x0) 203.4 ms at 13687 ms, present 731
+- Driver.WorkerWait (queue worker 0x0) 161.6 ms at 15513 ms, present 740
+- Driver.WorkerWait (queue worker 0x0) 83.3 ms at 13114 ms, present 730
+- Driver.Present.render_fence_wait (presenter) 55.9 ms at 12246 ms, present 729
+- Driver.WorkerWait (queue worker 0x0) 54.8 ms at 12246 ms, present 728
+- Driver.WorkerWait (queue worker 0x0) 52.3 ms at 12313 ms, present 729
+- Driver.Present.render_fence_wait (presenter) 49.3 ms at 12314 ms, present 730
+- Driver.Present.render_fence_wait (presenter) 45.5 ms at 90288 ms, present 1779
+- Driver.Present.render_fence_wait (presenter) 35.1 ms at 90183 ms, present 1778
+
+**Largest GPU batches** (GPU ranges inside, and the CPU slices that recorded each, inclusive)
+
+- batch 47694: 183.7 ms at 90659 ms, present 1780: GPU no ranges; recorded by no CPU slices
+- batch 47507: 47.1 ms at 89921 ms, present 1777: GPU no ranges; recorded by no CPU slices
+- batch 47537: 41.8 ms at 90175 ms, present 1777: GPU no ranges; recorded by no CPU slices
+- batch 3945: 41.1 ms at 12259 ms, present 729: GPU no ranges; recorded by Graphics.Draw (draw committer) 0.1, Graphics.Draw.draw_and_resource_release (draw committer) 0.1
+- batch 3953: 40.8 ms at 12321 ms, present 730: GPU no ranges; recorded by Graphics.Draw (draw committer) 0.1, Graphics.Draw.draw_and_resource_release (draw committer) 0.1
