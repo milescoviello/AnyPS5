@@ -32,7 +32,7 @@ public:
     }
     ~IrValuePool() { release(); }
 
-    IrValue& Create(IrOpcode opcode, IrType type, std::uint32_t id) {
+    IrValue& Create(IrOpcode opcode, IrType type, std::uint32_t id, std::pmr::memory_resource* useArena = nullptr) {
         live.push_back(nullptr);
         const bool reuse = !freeSlots.empty();
         if (!reuse && chunkUsed == chunkCapacity) {
@@ -46,7 +46,7 @@ public:
         IrValue* slot = reuse ? freeSlots.back() : chunks.back() + chunkUsed;
         IrValue* value = nullptr;
         try {
-            value = new (slot) IrValue(opcode, type, id);
+            value = new (slot) IrValue(opcode, type, id, useArena);
         } catch (...) {
             live.pop_back();
             throw;
@@ -124,6 +124,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<IrBlock>> blocks;
+    IrUseArena useArena;
     std::vector<IrBlock*> blockOrder;
     IrValuePool values;
     IrResourcePlan resourcePlan;

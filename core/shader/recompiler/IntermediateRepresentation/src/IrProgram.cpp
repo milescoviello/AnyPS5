@@ -312,7 +312,7 @@ IrBlock& IrProgram::CreateBlock() {
 }
 
 IrValue& IrProgram::CreateValue(IrOpcode opcode, IrType type) {
-    IrValue& created = values.Create(opcode, type, nextValueId);
+    IrValue& created = values.Create(opcode, type, nextValueId, useArena.Resource());
     nextValueId++;
     return created;
 }
