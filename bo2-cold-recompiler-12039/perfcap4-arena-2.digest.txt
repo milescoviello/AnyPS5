@@ -1,0 +1,71 @@
+2211 frames over 149887.6 ms (no summary line found)
+
+**Slowest frames** (largest slices inside each, inclusive)
+
+- present 728: 1406.4 ms at 12292 ms: Shader.ResolveAbi (title) 1952.7, Shader.PrepareArtifact (title) 1354.2, Vulkan.GraphicsPipelinePrebuild (shader prepare) 1193.8, Vulkan.GraphicsPipeline (shader prepare) 1185.1
+- present 1812: 825.4 ms at 102202 ms: batch (gpu) 68.3, VideoOut.Flip (presenter) 22.9, VideoOut.Flip.present (presenter) 22.8, Driver.Present (presenter) 22.8
+- present 1808: 803.1 ms at 100955 ms: batch (gpu) 134.2, Vulkan.GraphicsPipelinePrebuild (shader prepare) 44.4, Vulkan.GraphicsPipeline (shader prepare) 44.0, Vulkan.GraphicsPipelineLibrary (shader prepare) 23.2
+- present 729: 493.0 ms at 13698 ms: Shader.ResolveAbi (title) 633.8, Shader.PrepareArtifact (title) 466.9, Driver.WorkerWait (queue worker 0x0) 253.7, Driver.WorkerWait.idle_and_completion_poll (queue worker 0x0) 253.7
+- present 1813: 434.1 ms at 103027 ms: batch (gpu) 60.7, VideoOut.Flip (presenter) 22.6, VideoOut.Flip.present (presenter) 22.6, Driver.Present (presenter) 22.6
+
+**Threads** (ms per frame)
+
+| thread | busy | wait | untraced | in slices < 20 us | largest |
+|---|---|---|---|---|---|
+| title | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.Register 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Shader.PrepareArtifact 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| shader prepare | 0.1 (0 %) | 0.0 (0 %) | 67.7 | 0.0 | Vulkan.GraphicsPipelinePrebuild 0.1 |
+| title | 0.7 (1 %) | 0.0 (0 %) | 67.1 | 3.7 | Shader.ResolveAbi 0.4, Shader.ResolveGraphicsAbi 0.2 |
+| title | 0.5 (1 %) | 0.0 (0 %) | 67.3 | 2.8 | Shader.ResolveAbi 0.2, Shader.ResolveGraphicsAbi 0.2 |
+| queue worker 0x0 | 4.4 (6 %) | 5.5 (8 %) | 57.9 | 5.1 | Driver.Packet 8.1, Driver.EndSubmission 0.1 |
+| draw committer | 7.9 (12 %) | 0.0 (0 %) | 59.9 | 7.5 | Graphics.Draw 7.9, Recorder.Submit 0.1 |
+| presenter | 0.3 (0 %) | 13.9 (20 %) | 53.6 | 0.1 | VideoOut.Flip 14.2, Driver.Present 0.0 |
+| title | 0.8 (1 %) | 0.0 (0 %) | 67.0 | 3.6 | Shader.ResolveAbi 0.5, Shader.ResolveGraphicsAbi 0.2 |
+| title | 0.9 (1 %) | 0.0 (0 %) | 66.9 | 3.7 | Shader.ResolveAbi 0.6, Shader.ResolveGraphicsAbi 0.2 |
+| title | 0.7 (1 %) | 0.0 (0 %) | 67.1 | 3.7 | Shader.ResolveAbi 0.4, Shader.ResolveGraphicsAbi 0.2 |
+| gpu | 18.3 (27 %) | 0.0 (0 %) | 49.5 | 0.0 | batch 18.3 |
+
+**Largest slices** (ms per frame, inclusive, all threads): batch 18.3, VideoOut.Flip 14.2, VideoOut.Flip.vblank_wait 9.5, Driver.Packet 8.1, Graphics.Draw 7.9, Graphics.Draw.draw_and_resource_release 7.4, VideoOut.Flip.present 4.6, Driver.Present 4.6, Driver.Present.render_fence_wait 4.4, Vulkan.Retire 4.4
+
+**Longest waits**
+
+- Driver.WorkerWait (queue worker 0x0) 504.2 ms at 12390 ms, present 728
+- Driver.WorkerWait (queue worker 0x0) 223.2 ms at 13766 ms, present 729
+- Driver.WorkerWait (queue worker 0x0) 176.9 ms at 15528 ms, present 738
+- Driver.WorkerWait (queue worker 0x0) 156.5 ms at 13088 ms, present 728
+- Driver.Present.render_fence_wait (presenter) 51.2 ms at 12230 ms, present 727
+- Driver.WorkerWait (queue worker 0x0) 49.7 ms at 12229 ms, present 726
+- Driver.Present.render_fence_wait (presenter) 44.7 ms at 100845 ms, present 1807
+- Driver.Present.render_fence_wait (presenter) 35.9 ms at 100738 ms, present 1806
+- Driver.WorkerWait (queue worker 0x0) 31.6 ms at 18368 ms, present 753
+- Driver.WorkerWait (queue worker 0x0) 30.9 ms at 23394 ms, present 779
+
+**Largest GPU batches** (GPU ranges inside, and the CPU slices that recorded each, inclusive)
+
+- batch 59711: 84.7 ms at 101216 ms, present 1808: GPU no ranges; recorded by no CPU slices
+- batch 59522: 46.9 ms at 100496 ms, present 1805: GPU no ranges; recorded by no CPU slices
+- batch 3910: 41.6 ms at 12237 ms, present 727: GPU no ranges; recorded by Graphics.Draw (draw committer) 0.1, Graphics.Draw.draw_and_resource_release (draw committer) 0.0
+- batch 59555: 40.8 ms at 100731 ms, present 1805: GPU no ranges; recorded by no CPU slices
+- batch 3963: 33.8 ms at 12506 ms, present 728: GPU no ranges; recorded by Driver.WorkerWait (queue worker 0x0) 504.2, Driver.WorkerWait.idle_and_completion_poll (queue worker 0x0) 504.2, Driver.Packet (queue worker 0x0) 192.1, Driver.Packet.draw (queue worker 0x0) 192.0
