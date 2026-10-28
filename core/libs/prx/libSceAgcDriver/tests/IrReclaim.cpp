@@ -96,6 +96,23 @@ int main() {
         keptReader.AddArgument(&kept);
         replaced = std::move(replacement);
         if (kept.UseCount() != 1u || kept.OperandUses().front().user != &keptReader) throw std::runtime_error("move assignment invalidated the assigned program's use lists");
+        IrProgram cached;
+        auto& source = cached.CreateValue(IrOpcode::IAdd32, IrType::U32);
+        std::vector<IrValue*> users;
+        for (std::uint32_t number = 0; number < 40u; ++number) {
+            auto& user = cached.CreateValue(IrOpcode::IAdd32, IrType::U32);
+            user.AddArgument(&source);
+            users.push_back(&user);
+        }
+        cached.ReleaseUseArena();
+        if (source.OperandUses().get_allocator().Arena() != nullptr || users.front()->OperandUses().get_allocator().Arena() != nullptr) throw std::runtime_error("releasing the use arena left a use list in it");
+        if (source.UseCount() != users.size()) throw std::runtime_error("releasing the use arena lost a use");
+        for (std::size_t index = 0; index < users.size(); ++index) {
+            if (source.OperandUses()[index].user != users[index] || users[index]->Argument(0) != &source) throw std::runtime_error("releasing the use arena reordered a use list");
+        }
+        auto& late = cached.CreateValue(IrOpcode::IAdd32, IrType::U32);
+        late.AddArgument(&source);
+        if (late.OperandUses().get_allocator().Arena() == nullptr || source.UseCount() != users.size() + 1u || source.OperandUses().back().user != &late) throw std::runtime_error("a value created after releasing the use arena did not get a new one");
         IrProgram moved = std::move(program);
         if (value.Id() != id || value.ImmediateU32() != 42u || moved.ReclaimUnusedValues() != 1u) throw std::runtime_error("moving a program invalidated its allocation owner");
         IrProgram assigned;

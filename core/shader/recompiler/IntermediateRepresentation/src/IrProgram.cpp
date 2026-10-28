@@ -274,6 +274,11 @@ std::size_t IrProgram::ReclaimUnusedValues() {
     return removed;
 }
 
+void IrProgram::ReleaseUseArena() {
+    for (const auto& value : values) value->MoveUsesToHeap();
+    useArena = IrUseArena{};
+}
+
 std::vector<std::unique_ptr<IrBlock>>& IrProgram::Blocks() {
     return blocks;
 }

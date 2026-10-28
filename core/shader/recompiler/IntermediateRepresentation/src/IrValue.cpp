@@ -125,6 +125,11 @@ const IrUseList& IrValue::OperandUses() const {
     return operandUses;
 }
 
+void IrValue::MoveUsesToHeap() {
+    if (operandUses.get_allocator().Arena() == nullptr) return;
+    operandUses = IrUseList(operandUses.begin(), operandUses.end(), IrUseAllocator<IrUse>{});
+}
+
 std::uint64_t IrValue::ImmediateU64() const {
     return immediateBits;
 }

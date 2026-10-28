@@ -32,6 +32,7 @@ public:
     IrValue& CreateValue(IrOpcode opcode, IrType type, std::uint64_t flags);
     void SetEntryBlock(IrBlock& block);
     std::size_t ReclaimUnusedValues();
+    void ReleaseUseArena();
     [[nodiscard]] std::vector<IrBlock*>& BlockOrder();
     [[nodiscard]] const std::vector<IrBlock*>& BlockOrder() const;
 
