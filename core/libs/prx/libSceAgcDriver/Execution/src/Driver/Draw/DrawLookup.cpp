@@ -113,6 +113,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
             if (entry->stages.size() != programs.size()) miss = DrawMiss::Stages;
 
             std::uint32_t cursor = 0;
+            std::optional<bool> heapMode;
             {
                 const GuestMemory::ReadSiteScope site(GuestMemory::ReadSite::DrawCache);
 
@@ -126,7 +127,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                     bool anyLayout = false;
                     for (std::size_t rank = 0; rank < variants.size(); ++rank) {
                         const auto& variant = variants[rank];
-                        if (variant->pushOffset != cursor || (heapRefused && variant->compiled->gpuResolvedImages)) continue;
+                        if (variant->pushOffset != cursor || (heapRefused && variant->compiled->gpuResolvedImages) || (heapMode && variant->compiled->gpuResolvedImages != *heapMode)) continue;
                         if (programs[i].binary.stage == ShaderRecompiler::ShaderStage::Mesh && !std::equal(variant->meshIndexDescriptor.begin(), variant->meshIndexDescriptor.end(), programs[i].userData.begin() + ShaderRecompiler::MeshIndexBufferUserWord)) {
                             if (!anyLayout) outcome = EntryOutcome::Differing;
                             anyLayout = true;
@@ -153,6 +154,7 @@ void Driver::lookupDraw(const Submission& submission, const std::shared_ptr<Vulk
                         }
                         matched[i] = variant;
                         ranks[i] = rank;
+                        if (!heapMode) heapMode = variant->compiled->gpuResolvedImages;
                         ++stageEqual;
                         cursor += static_cast<std::uint32_t>(variant->compiled->pushConstants.size());
                         break;
