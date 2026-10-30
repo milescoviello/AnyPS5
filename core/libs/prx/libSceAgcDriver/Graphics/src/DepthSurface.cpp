@@ -265,6 +265,23 @@ std::optional<DepthPlaneOverwrite> decodeOverwrite(const StorageImageClear& clea
     return overwrite;
 }
 
+GuestTextureResource stencilPlaneResource(const DepthTarget& target) {
+    GuestTextureResource resource{};
+    resource.baseAddress = target.stencilAddress;
+    resource.width = target.extent.width;
+    resource.height = target.extent.height;
+    resource.mipCount = 1;
+    resource.allocatedMipCount = 1;
+    resource.tileMode = TextureTileMode::kZ64KBX;
+    resource.dimension = TextureDimension::k2D;
+    resource.format = 5;
+    resource.dstSelX = 4;
+    resource.dstSelY = 5;
+    resource.dstSelZ = 6;
+    resource.dstSelW = 7;
+    return resource;
+}
+
 class DepthSurface {
 public:
     DepthSurface(const Context& context, const DepthTarget& target, DepthSamplingState sampling = {}) : context(context), target(target), hostFormat(HostDepthFormat(context, target.format)), sampling(std::move(sampling)) {
@@ -527,6 +544,23 @@ public:
         RecordMemoryBarrier(context, commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, all);
         if (batch) batch->SubmitAndWait();
         else Recorder::CountBarriers(Recorder::CommandClass::Draw, 2);
+    }
+
+    bool StencilThroughMemory(const DepthSurface& source) const {
+        return target.stencilAddress != 0 && source.target.stencilAddress == target.stencilAddress && source.target.format == VK_FORMAT_D32_SFLOAT_S8_UINT && target.format == VK_FORMAT_D32_SFLOAT_S8_UINT && source.target.samples == 1 && target.samples == 1 && source.target.depthSwizzle == XorSwizzleMode(TextureTileMode::kZ64KBX) && target.depthSwizzle == source.target.depthSwizzle;
+    }
+
+    void CopyStencilThroughMemory(DepthSurface& source) {
+        auto stored = StorageTexture::Create(context, *context.detiler, stencilPlaneResource(source.target), 0);
+        source.copyPlane(source.stencilPlane, stored, true, true, true);
+        if (auto* recorder = Recorder::Active(); recorder != nullptr) recorder->Sync();
+        stored->MarkDirty();
+        stored->Flush();
+        auto loaded = StorageTexture::Create(context, *context.detiler, stencilPlaneResource(target), 0);
+        ForgetClear(VK_IMAGE_ASPECT_STENCIL_BIT);
+        copyPlane(stencilPlane, loaded, true, false, true);
+        NoteHostWrite();
+        written = ++depthWrites;
     }
 
     bool Holds(const Texture* texture) const {
@@ -1710,6 +1744,13 @@ void takePlane(DepthSurface& surface, PlaneOwners& owners, std::uint64_t address
             if (!created || (aspect == VK_IMAGE_ASPECT_DEPTH_BIT ? surface.depthFill.has_value() : surface.stencilFill.has_value())) surface.pendingClear |= aspect;
         } else {
             surface.CopyAspectFrom(*owner, aspect);
+        }
+    } else if (aspect == VK_IMAGE_ASPECT_STENCIL_BIT && owner != nullptr && owner->active->load(std::memory_order_acquire) && owner != &surface && (clearAspects & aspect) == 0 && surface.StencilThroughMemory(*owner)) {
+        if ((owner->pendingClear & aspect) != 0) {
+            surface.stencilFill = owner->stencilFill;
+            if (!created || surface.stencilFill.has_value()) surface.pendingClear |= aspect;
+        } else {
+            surface.CopyStencilThroughMemory(*owner);
         }
     }
     entry = {&surface, ++planeBinds};
