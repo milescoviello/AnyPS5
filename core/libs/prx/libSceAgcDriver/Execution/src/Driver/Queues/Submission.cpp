@@ -16,6 +16,7 @@
 #include "prx/libc/include/HostThreadLocal.hpp"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <bit>
 #include <cmath>
 #include <cstdio>
@@ -272,12 +273,23 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
     const auto segment = submission.indirectSegments[index];
     const auto address = reinterpret_cast<std::uint64_t>(segment.target);
     const auto bytes = segment.words * sizeof(std::uint32_t);
+    static const bool noRefresh = std::getenv("APS5_NO_INDIRECT_REFRESH") != nullptr;
+    if (noRefresh) return false;
+    static const bool trace = std::getenv("APS5_TRACE_INDIRECT_REFRESH") != nullptr;
+    static std::atomic<std::uint64_t> traced{0};
+    const auto serial = trace ? traced.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    const bool print = trace && (serial <= 400 || (serial & (serial - 1)) == 0);
+    const auto started = std::chrono::steady_clock::now();
+    if (print) std::fprintf(stderr, "[ib-refresh] #%llu queue 0x%x re-reading indirect buffer 0x%llx (%zu dwords) at dword %zu\n", static_cast<unsigned long long>(serial), submission.queue, static_cast<unsigned long long>(address), segment.words, segment.start);
     if (DrawPipeline::Active() && DrawPipeline::Queue0().Overlaps(address, bytes)) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x3f);
     if (DrawFinisher::Busy() && DrawFinisher::Get().PendingOverlaps(address, address + bytes)) DrawFinisher::Get().Drain();
+    const auto drained = std::chrono::steady_clock::now();
     std::vector<std::uint32_t> words(segment.words);
     GuestMemory::Read(address, std::as_writable_bytes(std::span(words)), alignof(std::uint32_t));
     const auto end = segment.start + segment.words;
-    if (std::equal(words.begin(), words.end(), submission.commands.begin() + static_cast<std::ptrdiff_t>(segment.start))) return false;
+    const bool unchanged = std::equal(words.begin(), words.end(), submission.commands.begin() + static_cast<std::ptrdiff_t>(segment.start));
+    if (print) std::fprintf(stderr, "[ib-refresh] #%llu queue 0x%x indirect buffer 0x%llx %s; drains %.1f ms, read %.1f ms\n", static_cast<unsigned long long>(serial), submission.queue, static_cast<unsigned long long>(address), unchanged ? "unchanged" : "changed", std::chrono::duration<double, std::milli>(drained - started).count(), std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - drained).count());
+    if (unchanged) return false;
     Submission expanded{};
     expanded.queue = submission.queue;
     std::size_t budget = std::size_t{1} << 26u;
