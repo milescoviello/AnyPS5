@@ -43,6 +43,10 @@
 #include <tuple>
 #include <unordered_map>
 #include "prx/libc/include/general/AtomicSharedPtr.hpp"
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <execinfo.h>
+#endif
 
 namespace AgcDriver::Graphics {
 
@@ -3863,8 +3867,41 @@ void Recorder::FinishUpTo(std::uint64_t serial) {
     activeSyncSite = previousSite;
 }
 
+namespace {
+
+void reportLongSync(const char* kind, std::chrono::steady_clock::time_point start, int source) {
+    static const double threshold = [] {
+        const char* text = std::getenv("APS5_TRACE_LONG_SYNCS");
+        return text != nullptr ? std::atof(text) : 0.0;
+    }();
+    if (threshold <= 0.0) return;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    static std::atomic<int> reports{0};
+    if (ms < threshold || reports.fetch_add(1, std::memory_order_relaxed) >= 200) return;
+    std::string frames;
+#ifndef _WIN32
+    void* addresses[24];
+    const int count = backtrace(addresses, 24);
+    for (int i = 1; i < count; ++i) {
+        char item[128];
+        Dl_info info{};
+        if (dladdr(addresses[i], &info) != 0 && info.dli_fbase != nullptr) {
+            const char* slash = info.dli_fname != nullptr ? std::strrchr(info.dli_fname, '/') : nullptr;
+            std::snprintf(item, sizeof(item), " %s+0x%llx", slash != nullptr ? slash + 1 : "?", static_cast<unsigned long long>(static_cast<const char*>(addresses[i]) - static_cast<const char*>(info.dli_fbase)));
+        } else {
+            std::snprintf(item, sizeof(item), " %p", addresses[i]);
+        }
+        frames += item;
+    }
+#endif
+    std::fprintf(stderr, "[long-sync] %s %.1f ms source %d:%s\n", kind, ms, source, frames.c_str());
+}
+
+}
+
 void Recorder::Sync() {
     PerformanceTimer frameTiming("Recorder.Sync");
+    const auto syncStart = std::chrono::steady_clock::now();
     const auto source = std::exchange(announcedSource, 4);
     const void* site = std::exchange(announcedSite, nullptr);
     Submit();
@@ -3877,6 +3914,7 @@ void Recorder::Sync() {
         finish(std::move(batch), true, source);
     }
     activeSyncSite = previousSite;
+    reportLongSync("sync", syncStart, source);
 }
 
 void Recorder::FlushDeferredReleases() {
@@ -3940,6 +3978,12 @@ void Recorder::SyncThrough(std::uint64_t address, std::size_t bytes, bool waitUn
     if (unsignaled(targetSerial)) ++hookRealWaits;
     targetedSyncs.fetch_add(1, std::memory_order_relaxed);
     const RestoreSyncSite restoreSite{BeginSyncSite(source, site != nullptr ? site : __builtin_return_address(0))};
+    const auto throughStart = std::chrono::steady_clock::now();
+    struct LongThrough {
+        std::chrono::steady_clock::time_point start;
+        int source;
+        ~LongThrough() { reportLongSync("through", start, source); }
+    } longThrough{throughStart, source};
     // Batches are in flight in serial order. A completion's own guest access can sync re-entrantly
     // and finish the target first (and a new batch may reuse its allocation, so the serial, not the
     // pointer, identifies it); the loop stops then, and later batches stay in flight either way.
