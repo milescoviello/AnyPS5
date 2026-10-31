@@ -1861,6 +1861,7 @@ std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, co
     const auto lookupStart = std::chrono::steady_clock::now();
     const auto walkedBefore = profile ? GuestMemory::ThreadCollectedBytes() : 0;
     const auto waitedBefore = profile ? Recorder::ThreadWaitedMs() : 0.0;
+    const auto outcomesBefore = profile ? ThreadLookupOutcomes().ms : std::array<double, LookupOutcomes::Count>{};
     std::shared_ptr<StorageTexture> resident;
     try {
         resident = lookup();
@@ -1881,10 +1882,19 @@ std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, co
         }
         static std::atomic<std::uint32_t> slowReports{0};
         if (lookupUs >= 50000.0 && slowReports.fetch_add(1, std::memory_order_relaxed) < 400) {
-            std::fprintf(stderr, "[slow-target] 0x%llx %ux%u format %d tile %d samples %u mip %u slice %u: %.1f ms, GPU waits %.1f ms, pages walked %llu, resident %d\n",
+            std::string split;
+            const auto& outcomesAfter = ThreadLookupOutcomes().ms;
+            for (std::size_t kind = 0; kind < LookupOutcomes::Count; ++kind) {
+                const auto ms = outcomesAfter[kind] - outcomesBefore[kind];
+                if (ms < 0.05) continue;
+                char part[64];
+                std::snprintf(part, sizeof(part), " %s %.1f", LookupOutcomes::Name(static_cast<LookupOutcomes::Kind>(kind)), ms);
+                split += part;
+            }
+            std::fprintf(stderr, "[slow-target] 0x%llx %ux%u format %d tile %d samples %u mip %u slice %u: %.1f ms, GPU waits %.1f ms, pages walked %llu, resident %d; lookup ms:%s\n",
                          static_cast<unsigned long long>(color.address), color.extent.width, color.extent.height, static_cast<int>(color.format), static_cast<int>(color.tileMode), color.samples, color.mip,
                          color.arraySlice, lookupUs / 1000.0, Recorder::ThreadWaitedMs() - waitedBefore,
-                         static_cast<unsigned long long>((GuestMemory::ThreadCollectedBytes() - walkedBefore) / 4096), resident != nullptr ? 1 : 0);
+                         static_cast<unsigned long long>((GuestMemory::ThreadCollectedBytes() - walkedBefore) / 4096), resident != nullptr ? 1 : 0, split.empty() ? " none" : split.c_str());
         }
         outcome.lookupUs += lookupUs;
         outcome.pagesWalked += (GuestMemory::ThreadCollectedBytes() - walkedBefore) / 4096;
