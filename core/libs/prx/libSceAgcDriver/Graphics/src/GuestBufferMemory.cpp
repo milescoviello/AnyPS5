@@ -5596,6 +5596,13 @@ void GuestBufferMemory::UploadPrepare(bool addressable) {
 void GuestBufferMemory::completeSpaceWrites() const {
     auto* recorder = Recorder::Active();
     if (recorder == nullptr || Recorder::InCompletion() || !AnyPendingCpuWrites(context)) return;
+    static const bool gpuOrderedLabels = std::getenv("APS5_SPACE_LABELS_GPU_ORDERED") != nullptr;
+    const auto drawWriters = DrawCopiedWriters();
+    const auto copiedOver = [&](const Region& region) {
+        const auto bytes = static_cast<std::size_t>(region.end - region.begin);
+        const auto overlaps = [&](const auto& writers) { return std::any_of(writers.begin(), writers.end(), [&](const auto& writer) { return writer->CopiedWritesOverlap(region.begin, bytes); }); };
+        return (context.copiedWriters != nullptr && overlaps(*context.copiedWriters)) || overlaps(*drawWriters);
+    };
     const auto& base = space->base;
     std::vector<std::pair<std::uint64_t, std::uint64_t>> writes;
     std::vector<std::size_t> candidates;
@@ -5605,6 +5612,7 @@ void GuestBufferMemory::completeSpaceWrites() const {
         OverlappedRanges(std::span<const Region>(base), next, writes, candidates);
         next = base.size();
         for (const auto index : candidates) {
+            if (gpuOrderedLabels && !copiedOver(base[index])) continue;
             if (!CompletePendingCpuWrites(context, base[index].begin, static_cast<std::size_t>(base[index].end - base[index].begin))) continue;
             next = index + 1;
             break;
