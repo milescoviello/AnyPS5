@@ -4285,7 +4285,7 @@ void verifyDeviceImageTables() {
 #if ANYPS5_ENABLE_SPIRV_TOOLS
         static_cast<void>(ValidateAndOptimizeSpirv(result.spirv, request.target.vulkanVersion, request.target.spirvVersion));
 #endif
-        require(plan->info.deviceImageUses.size() == 1u && plan->info.deviceImageUses[0].image == 0u && plan->info.deviceImageUses[0].sampler == 0u, "device image tables: the plan does not record the device column's sampled use");
+        require(plan->info.deviceImageUses.size() == 1u && plan->info.deviceImageUses[0].image == 0u && plan->info.deviceImageUses[0].sampler == 0u && plan->info.deviceImageUses[0].samplerDescriptor == NoSampler, "device image tables: the plan does not record the device column's direct-sampler use");
         SrtRuntime runtime;
         runtime.userData = userData;
         runtime.shaderBase = request.shader.codeAddress;
@@ -4324,16 +4324,145 @@ void verifyDeviceImageTables() {
     const auto guestData = TableUserData(guest);
     const std::vector<std::uint32_t> storeCode{0xf4080100u, 0xfa000000u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf0200f08u, 0x00050200u, 0xbf810000u};
     const std::vector<std::uint32_t> compareCode{0xf4080100u, 0xfa000000u, 0xf4080200u, 0xfa000010u, 0xf4080700u, 0xfa000030u, 0x7e200500u, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf0fc0108u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
-    const std::vector<std::uint32_t> samplerTableCode{0xf4080100u, 0xfa000000u, 0xf4080300u, 0xfa000020u, 0xf4080700u, 0xfa000030u, 0xf4000400u, 0xfa000040u, 0x7e240500u, 0x8f118412u, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf4280206u, 0x22000000u, 0xf09c0f08u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
     const std::vector<std::uint32_t> unnormalizedCode{0xf4080100u, 0xfa000000u, 0xbe8803ffu, 0x00008000u, 0xbe890380u, 0xbe8a0380u, 0xbe8b0380u, 0xf4080700u, 0xfa000030u, 0xf4000400u, 0xfa000040u, 0x8f108510u, 0xf42c0502u, 0x20000000u, 0xf09c0f08u, 0x00450000u, 0xe0700000u, 0x80070000u, 0xbf810000u};
-    for (const auto* code : {&storeCode, &compareCode, &samplerTableCode, &unnormalizedCode}) {
+    for (const auto* code : {&storeCode, &compareCode, &unnormalizedCode}) {
         auto request = TableRequest(*code, guestData);
         request.target.gpuResolvedImages = true;
         request.target.descriptorMemory = true;
         request.target.deviceImageTables = true;
         const auto plan = GetResourcePlan(request);
-        require(!plan->info.images.empty() && plan->info.images[0].table != NoTable && !plan->info.images[0].deviceTable, "device image tables: a column with a storage write, a depth compare, a sampler table or an unnormalized sampler left the CPU map");
-        require(code != &samplerTableCode || (plan->info.samplers.size() == 1u && plan->info.samplers[0].table != NoTable), "device image tables: the sampler table program has no sampler table");
+        require(!plan->info.images.empty() && plan->info.images[0].table != NoTable && !plan->info.images[0].deviceTable, "device image tables: a column with a storage write, a depth compare or an unnormalized sampler left the CPU map");
+    }
+}
+
+void verifyDeviceTableSamplers() {
+    using namespace ShaderRecompiler;
+    namespace Abi = DeviceImageTableAbi;
+    namespace TableAbi = ImageTableAbi;
+    using SamplerWords = std::array<std::uint32_t, 4>;
+    constexpr SamplerWords clamp{0x92u, (4u * 256u) << 12u, 0u, 0u};
+    constexpr SamplerWords repeat{0u, (4u * 256u) << 12u, 0u, 0u};
+    static TableTexture textures[2];
+    alignas(4096) static std::array<std::array<std::uint32_t, 8>, 2> images{};
+    alignas(4096) static std::array<SamplerWords, 2> samplers{};
+    alignas(4096) static std::array<SamplerWords, 2> movedSamplers{};
+    alignas(4096) static std::array<std::uint32_t, 8> srt{};
+    static std::array<std::uint32_t, 4> output{};
+    for (std::uint32_t index = 0; index < images.size(); ++index) images[index] = TableT(textures[index].bytes.data(), TableFormat8888UNorm, TableType2D);
+    samplers = {clamp, repeat};
+    movedSamplers = {clamp, repeat};
+    const auto imagesV = TableV(images.data(), 0u, static_cast<std::uint32_t>(sizeof(images)));
+    const auto samplersV = TableV(samplers.data(), 0u, static_cast<std::uint32_t>(sizeof(samplers)));
+    const auto outputV = TableV(output.data(), 0u, static_cast<std::uint32_t>(sizeof(output)));
+    std::copy(imagesV.begin(), imagesV.end(), srt.begin());
+    std::copy(samplersV.begin(), samplersV.end(), srt.begin() + 4);
+    const auto address = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(srt.data()));
+    std::array<std::uint32_t, 8> userData{static_cast<std::uint32_t>(address), static_cast<std::uint32_t>(address >> 32u), 1u, 0u};
+    std::copy(outputV.begin(), outputV.end(), userData.begin() + 4);
+    const std::vector<std::uint32_t> code{0x7e0002ffu, 0x3f900000u, 0x7e0202ffu, 0x3e000000u, 0xf4080200u, 0xfa000000u, 0xf4080300u, 0xfa000010u, 0xbf8cc07fu,
+        0x8f108502u, 0x8f118403u, 0xf42c0504u, 0x20000000u, 0xf4280706u, 0x22000000u, 0xbf8cc07fu, 0xf09c0f08u, 0x00e50000u, 0xbf8c0000u, 0xe0780000u, 0x80010000u, 0xbf810000u};
+    const auto request = DeviceTableRequest(code, userData, false, true, true);
+    const auto plan = GetResourcePlan(request);
+    require(plan->info.images.size() == 1u && plan->info.images[0].deviceTable && plan->info.samplers.size() == 1u && plan->info.samplers[0].table != NoTable, "device table samplers: the image and sampler did not become runtime table resources");
+    require(ResourceMaterializer::DeviceTableSampler(plan->info, 0u) && !plan->requiresSpecializationMemory, "device table samplers: the sampler still requires table specialization memory");
+    require(plan->info.deviceImageUses.size() == 1u, "device table samplers: the sampled use is missing");
+    const auto& use = plan->info.deviceImageUses[0];
+    require(use.image == 0u && use.sampler == 0u && use.samplerDescriptor != NoSampler && plan->descriptorSources.at(use.samplerDescriptor).dwordCount == Abi::SamplerWords, "device table samplers: the sampled use lost its four raw S# words");
+    const auto first = CompileTable(request);
+    const auto& result = *first.result;
+    require(!TableTouched(first.regions, images.data(), sizeof(images)) && !TableTouched(first.regions, samplers.data(), sizeof(samplers)), "device table samplers: shader capture read image or sampler table records");
+    require(result.deviceImageTables && result.deviceSamplerClasses == std::vector<std::uint32_t>{Abi::RuntimeSampler}, "device table samplers: the result specialized the selected S# instead of its runtime class");
+    const auto& map = TableMap(result);
+    const auto* samplerBinding = TableBinding(result, DescriptorRole::SamplerTable);
+    require(map[TableAbi::HeaderElementCount] == 0u && map[TableAbi::HeaderSamplerCount] == 0u && (samplerBinding == nullptr || (samplerBinding->count == 0u && samplerBinding->guestDescriptor.empty())), "device table samplers: runtime records were materialized into CPU table bindings");
+    for (std::uint32_t table = 0; table < map[TableAbi::HeaderTableCount]; ++table) require(map.at(TableAbi::TableHeader(table) + TableAbi::TableKeyCount) == 0u, "device table samplers: a runtime column has CPU key records");
+    const auto scan = ScanDeviceTableSpirv(result.spirv.Words());
+    require(scan.lookup && !scan.lookupKeys.empty() && std::ranges::all_of(scan.lookupKeys, [](const auto& key) { return key[2] == Abi::RuntimeSampler; }), "device table samplers: the lookup key has no runtime sampler class");
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    static_cast<void>(ValidateAndOptimizeSpirv(result.spirv, request.target.vulkanVersion, request.target.spirvVersion));
+#endif
+    const auto expectedKey = [&](std::uint32_t image, std::uint32_t sampler, const SamplerWords& words) {
+        userData[2] = image;
+        userData[3] = sampler;
+        SrtRuntime runtime;
+        runtime.userData = userData;
+        runtime.shaderBase = request.shader.codeAddress;
+        bool complete = false;
+        auto expected = ResourceMaterializer::ExpectedDeviceImages(*plan, runtime, complete);
+        require(complete && expected.size() == 1u && !expected[0].candidate, "device table samplers: the selected T#/S# pair was not completely evaluated");
+        require(std::equal(images[image].begin(), images[image].end(), expected[0].key.begin()) && std::equal(words.begin(), words.end(), expected[0].key.begin() + Abi::SamplerWord), "device table samplers: independent image and sampler indices selected the wrong descriptor words");
+        Abi::NameInterfaces(expected, result.deviceImageInterfaces);
+        Abi::NameSamplerClasses(expected, result.deviceSamplerClasses);
+        require(expected[0].key[Abi::SamplerClassWord] == Abi::RuntimeSampler, "device table samplers: the expected key lost the runtime sampler class");
+        return expected[0].key;
+    };
+    const auto clamped = expectedKey(1u, 0u, clamp);
+    const auto repeated = expectedKey(1u, 1u, repeat);
+    require(clamped != repeated, "device table samplers: different samplers on the same image produced the same key");
+    const auto otherImage = expectedKey(0u, 1u, repeat);
+    require(otherImage != repeated, "device table samplers: the image index was replaced by the sampler index");
+    samplers[0] = repeat;
+    require(expectedKey(1u, 0u, repeat) == repeated, "device table samplers: changing S# words did not change the lookup key");
+    samplers[0] = {0u, (3u * 256u) << 12u, 1u << 26u, 2u << 30u};
+    require(expectedKey(1u, 0u, samplers[0]) != repeated, "device table samplers: sampler LOD, filtering and border words were omitted from the key");
+    const auto mutated = CompileTable(request);
+    require(result.variantId != 0u && mutated.result->variantId == result.variantId && mutated.result->PipelineVariantId() == result.PipelineVariantId() && mutated.result->spirv == result.spirv, "device table samplers: changing S# words changed the compiled shader or pipeline identity");
+    const auto movedV = TableV(movedSamplers.data(), 0u, static_cast<std::uint32_t>(sizeof(movedSamplers)));
+    std::copy(movedV.begin(), movedV.end(), srt.begin() + 4);
+    require(expectedKey(1u, 0u, clamp) == clamped && expectedKey(1u, 1u, repeat) == repeated, "device table samplers: moving the sampler table changed descriptor identity or retained the old pointer");
+    const auto moved = CompileTable(request);
+    require(moved.result->variantId == result.variantId && moved.result->PipelineVariantId() == result.PipelineVariantId() && moved.result->spirv == result.spirv && !TableTouched(moved.regions, movedSamplers.data(), sizeof(movedSamplers)), "device table samplers: moving the sampler table recaptured its records or changed the compiled identity");
+    auto laneCode = code;
+    laneCode.insert(laneCode.begin(), 0x7e060500u);
+    const auto laneRequest = DeviceTableRequest(laneCode, userData, false, true, true);
+    const auto lanePlan = GetResourcePlan(laneRequest);
+    require(lanePlan->info.images.size() == 1u && lanePlan->info.images[0].deviceTable && ResourceMaterializer::DeviceTableSampler(lanePlan->info, 0u), "device table samplers: a lane-selected S# did not stay on the device path");
+    SrtRuntime laneRuntime;
+    laneRuntime.userData = userData;
+    laneRuntime.shaderBase = laneRequest.shader.codeAddress;
+    bool complete = true;
+    static_cast<void>(ResourceMaterializer::ExpectedDeviceImages(*lanePlan, laneRuntime, complete));
+    require(!complete, "device table samplers: the pre-pass called a lane-selected S# complete");
+    const auto lane = CompileTable(laneRequest);
+    require(ScanDeviceTableSpirv(lane.result->spirv.Words()).lookup && !TableTouched(lane.regions, movedSamplers.data(), sizeof(movedSamplers)), "device table samplers: a lane-selected S# read a CPU sampler table");
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    static_cast<void>(ValidateAndOptimizeSpirv(lane.result->spirv, laneRequest.target.vulkanVersion, laneRequest.target.spirvVersion));
+#endif
+    for (const auto& gates : {std::array{false, true}, std::array{true, false}}) {
+        const auto offRequest = DeviceTableRequest(code, userData, false, gates[0], gates[1]);
+        const auto offPlan = GetResourcePlan(offRequest);
+        require(offPlan->info.images.size() == 1u && offPlan->info.images[0].table != NoTable && !offPlan->info.images[0].deviceTable, "device table samplers: an unavailable device path did not preserve the CPU image table");
+        const auto off = CompileTable(offRequest);
+        require(!off.result->deviceImageTables && !ScanDeviceTableSpirv(off.result->spirv.Words()).lookup && TableMap(*off.result)[TableAbi::HeaderElementCount] != 0u, "device table samplers: the CPU fallback did not materialize its image table");
+    }
+    IrResourcePlan selectedPlan;
+    selectedPlan.info.images.resize(1);
+    selectedPlan.info.deviceImageUses = {{0u, 0u, 0u, 0x40u, 1u}};
+    selectedPlan.descriptorSources.resize(2);
+    selectedPlan.descriptorSources[0].dwordCount = Abi::DescriptorWords;
+    selectedPlan.descriptorSources[1].dwordCount = Abi::SamplerWords;
+    std::vector<std::unique_ptr<IrValue>> values;
+    const auto make = [&](IrOpcode opcode, IrType type, std::initializer_list<IrValue*> arguments = {}) -> IrValue& {
+        values.push_back(std::make_unique<IrValue>(opcode, type, static_cast<std::uint32_t>(values.size())));
+        for (auto* argument : arguments) values.back()->AddArgument(argument);
+        return *values.back();
+    };
+    const auto constant = [&](std::uint32_t value) -> IrValue& {
+        auto& leaf = make(IrOpcode::Void, IrType::U32);
+        leaf.SetImmediateU32(value);
+        return leaf;
+    };
+    auto& vector = make(IrOpcode::Void, IrType::VectorReg);
+    vector.SetRegister({RegisterBank::Vector, 0});
+    auto& condition = make(IrOpcode::IEqual32, IrType::Bool, {&make(IrOpcode::GetRegister, IrType::U32, {&vector}), &constant(0u)});
+    for (std::size_t word = 0; word < Abi::DescriptorWords; ++word) selectedPlan.descriptorSources[0].dwords[word] = &make(IrOpcode::SelectU32, IrType::U32, {&condition, &constant(images[0][word]), &constant(images[1][word])});
+    for (std::size_t word = 0; word < Abi::SamplerWords; ++word) selectedPlan.descriptorSources[1].dwords[word] = &make(IrOpcode::SelectU32, IrType::U32, {&condition, &constant(clamp[word]), &constant(repeat[word])});
+    const auto selected = ResourceMaterializer::ExpectedDeviceImages(selectedPlan, SrtRuntime{}, complete);
+    require(complete && selected.size() == 2u && std::ranges::all_of(selected, [](const auto& expected) { return expected.candidate; }), "device table samplers: correlated descriptor choices did not produce exactly two candidate keys");
+    for (const auto& expected : selected) {
+        const bool firstPair = std::equal(images[0].begin(), images[0].end(), expected.key.begin()) && std::equal(clamp.begin(), clamp.end(), expected.key.begin() + Abi::SamplerWord);
+        const bool secondPair = std::equal(images[1].begin(), images[1].end(), expected.key.begin()) && std::equal(repeat.begin(), repeat.end(), expected.key.begin() + Abi::SamplerWord);
+        require(firstPair || secondPair, "device table samplers: the pre-pass paired an image with the sampler from the other control-flow choice");
     }
 }
 
@@ -4463,6 +4592,209 @@ void verifyDeviceRuntimeAddressColumns() {
         static_cast<void>(ValidateAndOptimizeSpirv(result.spirv, device.target.vulkanVersion, device.target.spirvVersion));
 #endif
     }
+}
+
+void verifyRuntimeSamplerSpirv(std::span<const std::uint32_t> words, bool nonUniformSlots) {
+    std::map<std::uint32_t, std::vector<std::uint32_t>> dependencies;
+    std::map<std::uint32_t, std::vector<std::uint32_t>> composites;
+    std::map<std::uint32_t, std::uint32_t> constants;
+    std::set<std::uint32_t> loads;
+    std::set<std::uint32_t> nonUniform;
+    std::vector<std::array<std::uint32_t, 3>> extracts;
+    std::vector<std::array<std::uint32_t, 3>> subtractions;
+    std::vector<std::array<std::uint32_t, 3>> calls;
+    std::vector<std::uint32_t> sampled;
+    std::uint32_t lookup = 0u;
+    for (std::size_t cursor = 5; cursor < words.size();) {
+        const auto count = words[cursor] >> 16u;
+        require(count != 0u && count <= words.size() - cursor, "runtime sampler SPIR-V: truncated instruction");
+        const auto op = words[cursor] & 0xffffu;
+        const auto at = [&](std::size_t index) { return words[cursor + index]; };
+        const auto range = [&](std::size_t first) { return std::vector<std::uint32_t>(words.begin() + cursor + first, words.begin() + cursor + count); };
+        if (op == spv::OpName && count > 2u) {
+            const auto* name = reinterpret_cast<const char*>(words.data() + cursor + 2u);
+            const auto* end = name + (count - 2u) * sizeof(std::uint32_t);
+            const auto* terminator = std::find(name, end, '\0');
+            require(terminator != end, "runtime sampler SPIR-V: unterminated name");
+            if (std::string_view(name, static_cast<std::size_t>(terminator - name)) == "device_image_lookup") lookup = at(1);
+        }
+        if (op == spv::OpDecorate && count == 3u && at(2) == spv::DecorationNonUniform) nonUniform.insert(at(1));
+        if (op == spv::OpConstant && count == 4u) constants[at(2)] = at(3);
+        if (op == spv::OpCompositeConstruct || op == spv::OpConstantComposite) composites[at(2)] = range(3);
+        if (op == spv::OpLoad) loads.insert(at(2));
+        if (op == spv::OpCompositeExtract && count == 5u) extracts.push_back({at(2), at(3), at(4)});
+        if (op == spv::OpISub && count == 5u) subtractions.push_back({at(2), at(3), at(4)});
+        if (op == spv::OpFunctionCall && count >= 8u) calls.push_back({at(2), at(3), at(7)});
+        if (op == spv::OpSampledImage && count == 5u) sampled.push_back(at(4));
+        switch (op) {
+            case spv::OpLoad:
+            case spv::OpCopyObject:
+            case spv::OpBitcast:
+            case spv::OpUConvert:
+            case spv::OpSConvert:
+            case spv::OpConvertUToPtr:
+            case spv::OpCompositeExtract:
+                dependencies[at(2)] = {at(3)};
+                break;
+            case spv::OpSelect:
+                dependencies[at(2)] = {at(4), at(5)};
+                break;
+            case spv::OpGroupNonUniformShuffle:
+                require(count == 6u, "runtime sampler SPIR-V: malformed subgroup shuffle");
+                dependencies[at(2)] = {at(4)};
+                break;
+            case spv::OpPhi:
+                for (std::size_t index = 3; index < count; index += 2u) dependencies[at(2)].push_back(at(index));
+                break;
+            case spv::OpFunctionCall:
+                dependencies[at(2)] = range(4);
+                break;
+            case spv::OpCompositeConstruct:
+            case spv::OpAccessChain:
+            case spv::OpIAdd:
+            case spv::OpISub:
+            case spv::OpBitwiseAnd:
+            case spv::OpBitwiseOr:
+            case spv::OpBitwiseXor:
+            case spv::OpShiftLeftLogical:
+            case spv::OpShiftRightLogical:
+                dependencies[at(2)] = range(3);
+                break;
+            default:
+                break;
+        }
+        cursor += count;
+    }
+    const auto dependsOn = [&](std::uint32_t value, const std::set<std::uint32_t>& sources) {
+        std::vector<std::uint32_t> pending{value};
+        std::set<std::uint32_t> visited;
+        while (!pending.empty()) {
+            const auto current = pending.back();
+            pending.pop_back();
+            if (!visited.insert(current).second) continue;
+            if (sources.contains(current)) return true;
+            if (const auto found = dependencies.find(current); found != dependencies.end()) pending.insert(pending.end(), found->second.begin(), found->second.end());
+        }
+        return false;
+    };
+    std::set<std::uint32_t> lookupResults;
+    for (const auto& [result, function, sampler] : calls) {
+        if (function != lookup) continue;
+        lookupResults.insert(result);
+        const auto found = composites.find(sampler);
+        require(found != composites.end() && found->second.size() == 4u && std::set<std::uint32_t>(found->second.begin(), found->second.end()).size() == 4u, "runtime sampler SPIR-V: the lookup does not receive four distinct sampler word values");
+        for (const auto word : found->second) require(!constants.contains(word) && dependsOn(word, loads), "runtime sampler SPIR-V: a sampler key word does not depend on a runtime load");
+    }
+    require(lookup != 0u && !lookupResults.empty(), "runtime sampler SPIR-V: no device lookup consumes the raw sampler words");
+    std::set<std::uint32_t> samplerSlotWords;
+    for (const auto& [result, composite, index] : extracts) {
+        if (index == 3u && lookupResults.contains(composite)) samplerSlotWords.insert(result);
+    }
+    std::set<std::uint32_t> decodedSlots;
+    for (const auto& [result, left, right] : subtractions) {
+        if (samplerSlotWords.contains(left) && constants.contains(right) && constants.at(right) == 1u) decodedSlots.insert(result);
+    }
+    require(!sampled.empty() && !decodedSlots.empty(), "runtime sampler SPIR-V: no sampled image decodes the returned sampler slot");
+    for (const auto sampler : sampled) {
+        require(dependsOn(sampler, decodedSlots), "runtime sampler SPIR-V: the sampled image does not use the lookup's sampler slot");
+        require(nonUniform.contains(sampler) == nonUniformSlots, "runtime sampler SPIR-V: sampler slot uniformity does not match the target workgroup");
+    }
+}
+
+void verifyDeviceRuntimeSamplerColumns() {
+    using namespace ShaderRecompiler;
+    namespace Abi = DeviceImageTableAbi;
+    namespace TableAbi = ImageTableAbi;
+    using SamplerWords = std::array<std::uint32_t, 4>;
+    constexpr SamplerWords clamp{0x92u, (4u * 256u) << 12u, 0u, 0u};
+    constexpr SamplerWords repeat{0u, (4u * 256u) << 12u, 0u, 0u};
+    static TableTexture texture;
+    alignas(4096) static std::array<std::array<std::uint32_t, 8>, 2> images{};
+    alignas(4096) static SamplerWords sampler{};
+    alignas(4096) static SamplerWords movedSampler{};
+    alignas(4096) static std::uint64_t pointer = 0u;
+    alignas(4096) static std::array<std::uint32_t, 8> srt{};
+    static std::array<std::uint32_t, 4> output{};
+    const auto address = [](const void* value) { return static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(value)); };
+    images.fill(TableT(texture.bytes.data(), TableFormat8888UNorm, TableType2D));
+    sampler = clamp;
+    movedSampler = clamp;
+    pointer = address(sampler.data());
+    const auto imageV = TableV(images.data(), 0u, static_cast<std::uint32_t>(sizeof(images)));
+    const auto pointerV = TableV(&pointer, 0u, static_cast<std::uint32_t>(sizeof(pointer)));
+    const auto outputV = TableV(output.data(), 0u, static_cast<std::uint32_t>(sizeof(output)));
+    std::copy(imageV.begin(), imageV.end(), srt.begin());
+    std::copy(pointerV.begin(), pointerV.end(), srt.begin() + 4);
+    std::array<std::uint32_t, 8> userData{static_cast<std::uint32_t>(address(srt.data())), static_cast<std::uint32_t>(address(srt.data()) >> 32u), 1u, 0u};
+    std::copy(outputV.begin(), outputV.end(), userData.begin() + 4);
+    const std::vector<std::uint32_t> code{0x7e0002ffu, 0x3f900000u, 0x7e0202ffu, 0x3e000000u, 0xf4080200u, 0xfa000000u, 0xf4080300u, 0xfa000010u, 0xbf8cc07fu,
+        0x8f108502u, 0xf42c0504u, 0x20000000u, 0xe0340000u, 0x80030200u, 0xbf8c0000u, 0x7e240502u, 0x7e260503u, 0xf4080709u, 0xfa000000u, 0xbf8cc07fu,
+        0xf09c0f08u, 0x00e50000u, 0xbf8c0000u, 0xe0780000u, 0x80010000u, 0xbf810000u};
+    const auto request = DeviceTableRequest(code, userData, false, true, true);
+    const auto plan = GetResourcePlan(request);
+    require(plan->info.images.size() == 1u && plan->info.images[0].deviceTable && plan->info.samplers.size() == 1u && ResourceMaterializer::DeviceTableSampler(plan->info, 0u), "device runtime sampler columns: the GPU-addressed S# did not remain paired with the device image");
+    const auto& source = plan->descriptorSources.at(plan->info.samplers[0].source);
+    require(source.tableColumn.has_value() && source.tableColumn->sampler && source.tableColumn->unkeyed && source.tableColumn->dwordCount == Abi::SamplerWords && plan->descriptorSources.at(source.tableColumn->heapSource).dwordCount == 0u, "device runtime sampler columns: the GPU-addressed S# was mistaken for an ordinary evaluable sampler table");
+    require(plan->info.deviceImageUses.size() == 1u && plan->info.deviceImageUses[0].samplerDescriptor != NoSampler && !plan->requiresSpecializationMemory, "device runtime sampler columns: the sampled use lost its raw source or still needs specialization memory");
+    const auto& raw = plan->descriptorSources.at(plan->info.deviceImageUses[0].samplerDescriptor);
+    require(raw.dwordCount == Abi::SamplerWords, "device runtime sampler columns: the raw S# source does not contain four words");
+    std::set<const IrValue*> rawWords;
+    for (std::uint32_t word = 0; word < Abi::SamplerWords; ++word) {
+        require(raw.dwords[word] != nullptr, "device runtime sampler columns: a raw S# word is missing");
+        rawWords.insert(raw.dwords[word]->Resolve());
+        std::vector<const IrValue*> pending{raw.dwords[word]};
+        std::set<const IrValue*> visited;
+        std::set<const IrValue*> firstLanes;
+        std::set<const IrValue*> bufferReads;
+        bool addressRead = false;
+        while (!pending.empty()) {
+            const auto* value = pending.back()->Resolve();
+            pending.pop_back();
+            if (!visited.insert(value).second) continue;
+            if (value->Opcode() == IrOpcode::ReadFirstLane) firstLanes.insert(value);
+            if (value->Opcode() == IrOpcode::LoadBufferU32 || value->Opcode() == IrOpcode::LoadBufferU32x2) bufferReads.insert(value);
+            addressRead = addressRead || value->Opcode() == IrOpcode::LoadAddressU32 || value->Opcode() == IrOpcode::LoadAddressU32x4;
+            for (const auto* argument : value->Arguments()) pending.push_back(argument);
+        }
+        require(addressRead && firstLanes.size() >= 2u && !bufferReads.empty(), "device runtime sampler columns: an S# word does not depend on both halves of the GPU-loaded sampler address");
+    }
+    require(rawWords.size() == Abi::SamplerWords, "device runtime sampler columns: raw S# words were duplicated");
+    SrtRuntime runtime;
+    runtime.userData = userData;
+    runtime.shaderBase = request.shader.codeAddress;
+    bool complete = true;
+    const auto expected = ResourceMaterializer::ExpectedDeviceImages(*plan, runtime, complete);
+    require(!complete && expected.empty(), "device runtime sampler columns: the CPU pre-pass invented a key for a GPU-loaded sampler address");
+    const auto first = CompileTable(request);
+    const auto& result = *first.result;
+    require(result.deviceImageTables && result.deviceSamplerClasses == std::vector<std::uint32_t>{Abi::RuntimeSampler}, "device runtime sampler columns: the compiled lookup did not use the runtime sampler class");
+    const auto uncaptured = [&](const TableCompiled& compiled) {
+        return !TableTouched(compiled.regions, images.data(), sizeof(images)) && !TableTouched(compiled.regions, &pointer, sizeof(pointer)) && !TableTouched(compiled.regions, sampler.data(), sizeof(sampler)) && !TableTouched(compiled.regions, movedSampler.data(), sizeof(movedSampler));
+    };
+    require(uncaptured(first), "device runtime sampler columns: shader capture read the GPU pointer cell or descriptor records");
+    const auto& map = TableMap(result);
+    require(map[TableAbi::HeaderElementCount] == 0u && map[TableAbi::HeaderSamplerCount] == 0u, "device runtime sampler columns: descriptor records entered the CPU table map");
+    const auto* samplerBinding = TableBinding(result, DescriptorRole::SamplerTable);
+    require(samplerBinding == nullptr || (samplerBinding->guestDescriptor.empty() && samplerBinding->count == 0u), "device runtime sampler columns: the logical sampler binding contains CPU records");
+    verifyRuntimeSamplerSpirv(result.spirv.Words(), false);
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    static_cast<void>(ValidateAndOptimizeSpirv(result.spirv, request.target.vulkanVersion, request.target.spirvVersion));
+#endif
+    auto twoWaves = request;
+    twoWaves.context.compute->numThreads = {128u, 1u, 1u};
+    const auto nonUniform = CompileTable(twoWaves);
+    require(nonUniform.result->deviceImageTables && uncaptured(nonUniform), "device runtime sampler columns: the two-wave request lost device lookup or captured GPU descriptor records");
+    verifyRuntimeSamplerSpirv(nonUniform.result->spirv.Words(), true);
+#if ANYPS5_ENABLE_SPIRV_TOOLS
+    static_cast<void>(ValidateAndOptimizeSpirv(nonUniform.result->spirv, twoWaves.target.vulkanVersion, twoWaves.target.spirvVersion));
+#endif
+    const auto unchanged = [&](const TableCompiled& compiled) {
+        return result.variantId != 0u && compiled.result->variantId == result.variantId && compiled.result->PipelineVariantId() == result.PipelineVariantId() && compiled.result->spirv == result.spirv && uncaptured(compiled);
+    };
+    sampler = repeat;
+    require(unchanged(CompileTable(request)), "device runtime sampler columns: changing the selected S# words changed the module or pipeline identity");
+    pointer = address(movedSampler.data());
+    require(unchanged(CompileTable(request)), "device runtime sampler columns: changing the GPU-loaded pointer recaptured records or changed the compiled identity");
 }
 
 void verifyTableTrailer() {
@@ -10138,7 +10470,8 @@ int main(int argc, char** argv) {
         }
         if (argc == 2 && std::string_view(argv[1]) == "--device-image-tables") {
             verifyDeviceImageTables();
-            std::cout << "GPU-mode stages read V# table columns through the device image table, whose addresses they take from the map trailer\n";
+            verifyDeviceTableSamplers();
+            std::cout << "GPU-mode stages read image and sampler table columns through the device image table, whose addresses they take from the map trailer\n";
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--device-pointer-columns") {
@@ -10149,6 +10482,11 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--device-runtime-address-columns") {
             verifyDeviceRuntimeAddressColumns();
             std::cout << "GPU-mode stages read a T# whose address is known only at run time through the device image table\n";
+            return 0;
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "--device-runtime-sampler-columns") {
+            verifyDeviceRuntimeSamplerColumns();
+            std::cout << "GPU-loaded sampler addresses feed four runtime S# key words and the selected device sampler slot without changing the compiled identity\n";
             return 0;
         }
         if (argc == 2 && std::string_view(argv[1]) == "--table-trailer") {
