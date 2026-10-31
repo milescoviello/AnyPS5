@@ -6238,13 +6238,14 @@ std::array<std::uint32_t, 2u * ShaderRecompiler::RuntimeAbi::StageCount> ShaderR
 }
 
 void ShaderResources::requireGuestBuffers(std::span<const MovedBuffer> moved) const {
+    static const bool writtenOnly = std::getenv("APS5_GUARD_WRITTEN_GUEST_BUFFERS") != nullptr;
     for (std::size_t index = 0; index < allocations.size(); ++index) {
         const auto& item = allocations[index];
         if (!item.guest) continue;
         const auto override = std::find_if(moved.begin(), moved.end(), [&](const MovedBuffer& entry) { return entry.allocation == index; });
         const auto address = override != moved.end() ? override->address : item.address;
         const auto bytes = override != moved.end() ? override->size : item.size;
-        RequireNoResidentDepthRead_nid_no_patch(address, bytes, htileClear);
+        if (!writtenOnly || item.written) RequireNoResidentDepthRead_nid_no_patch(address, bytes, htileClear);
         RequireNoMultisampleColorTarget(address, bytes, "a shader buffer access");
     }
 }
