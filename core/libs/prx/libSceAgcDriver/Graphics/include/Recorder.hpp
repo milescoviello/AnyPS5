@@ -484,6 +484,7 @@ public:
     std::uint32_t BeginGpuTiming(std::uint64_t key);
     std::uint32_t BeginInPassGpuTiming(std::uint64_t key);
     // `bytes`: what the range moved (a fill's, a copy's), summed per key on the [gputime] line.
+    static constexpr std::uint64_t IndirectDispatchTiming = std::uint64_t{1} << 63;
     void EndGpuTiming(std::uint32_t index, std::uint64_t bytes = 0);
     // The key of the whole-batch range (first to last command; reported as "batch" on the [gputime]
     // line, apart from the per-program totals).

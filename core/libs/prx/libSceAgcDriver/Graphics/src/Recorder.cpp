@@ -1878,7 +1878,7 @@ std::atomic<std::uint64_t> settledFrames{0};
 std::atomic<std::uint64_t> settledFrameBusyNs{0};
 std::atomic<bool> batchStampsRequested{false};
 std::atomic<std::uint64_t> timingDropped{0};
-struct TimingTotals { std::uint64_t count = 0; double ms = 0; std::uint64_t bytes = 0; };
+struct TimingTotals { std::uint64_t count = 0; double ms = 0; std::uint64_t bytes = 0; std::uint64_t indirect = 0; };
 AgcDriver::Mutex timingMutex;
 std::map<std::uint64_t, TimingTotals> timingByKey;
 double timingProgramMs = 0, timingClassMs = 0, timingUnionMs = 0, timingBatchMs = 0;
@@ -2706,7 +2706,11 @@ void Recorder::readGpuTiming(Batch& batch) {
         auto& totals = timingByKey[key];
         ++totals.count;
         totals.ms += ns / 1e6;
-        totals.bytes += batch.timedBytes[i];
+        if (batch.timedBytes[i] == Recorder::IndirectDispatchTiming) {
+            ++totals.indirect;
+        } else {
+            totals.bytes += batch.timedBytes[i];
+        }
         (key >= ClassKey(CommandClass::DispatchLeading) && key < ClassKey(CommandClass::Count) ? timingClassMs : timingProgramMs) += ns / 1e6;
         intervals.emplace_back(stamps[i * 2], stamps[i * 2 + 1]);
     }
@@ -2738,7 +2742,7 @@ void Recorder::readGpuTiming(Batch& batch) {
     std::sort(hot.begin(), hot.end(), [](const auto& a, const auto& b) { return a.second.ms > b.second.ms; });
     // The first field stays the program sum: the measure scripts match on it.
     AgcDriver::ProfilePrint_nid_no_patch("[gputime] %.0f ms of GPU time in %llu batches over 10 s (batch %.0f ms first to last command; classes %.0f ms, all ranges %.0f ms, untimed %.0f ms outside every range; %llu presents; %llu ranges dropped at the %u cap); by program:", timingProgramMs, static_cast<unsigned long long>(timingBatches), timingBatchMs, timingClassMs, timingUnionMs, timingBatchMs - timingUnionMs, static_cast<unsigned long long>(presents), static_cast<unsigned long long>(timingDropped.exchange(0, std::memory_order_relaxed)), MaxTimedRanges);
-    for (std::size_t i = 0; i < hot.size() && i < 12; ++i) AgcDriver::ProfilePrint_nid_no_patch(" %s x%llu %.0fms", Recorder::TimingKeyLabel(hot[i].first).c_str(), static_cast<unsigned long long>(hot[i].second.count), hot[i].second.ms);
+    for (std::size_t i = 0; i < hot.size() && i < 12; ++i) AgcDriver::ProfilePrint_nid_no_patch(" %s x%llu %.0fms (%llu groups direct, %llu indirect)", Recorder::TimingKeyLabel(hot[i].first).c_str(), static_cast<unsigned long long>(hot[i].second.count), hot[i].second.ms, static_cast<unsigned long long>(hot[i].second.bytes), static_cast<unsigned long long>(hot[i].second.indirect));
     AgcDriver::ProfilePrint_nid_no_patch("; by class:%s\n", classes.c_str());
     timingByKey.clear();
     timingProgramMs = timingClassMs = timingUnionMs = timingBatchMs = 0;

@@ -5616,7 +5616,7 @@ void VulkanDevice::recordDispatch(RecordedDispatch& record) {
             }
         }
     }
-    recorder.EndGpuTiming(gpuTiming);
+    recorder.EndGpuTiming(gpuTiming, argumentImport != nullptr ? Graphics::Recorder::IndirectDispatchTiming : static_cast<std::uint64_t>(record.x) * record.y * record.z);
     if (marker != 0) state->bufferMarker(commands, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, state->markerBuffer, sizeof(std::uint32_t), marker);
     const auto trailingTiming = recorder.BeginGpuTiming(CommandClass::DispatchTrailing);
     constexpr VkAccessFlags dispatchedAccess = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_HOST_READ_BIT;
