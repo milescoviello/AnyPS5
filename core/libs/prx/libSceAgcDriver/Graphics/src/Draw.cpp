@@ -1860,6 +1860,7 @@ DrawInputs prepareDrawInputs(const Context& context, const State& state, const P
 std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, const State& state, const ColorTarget& color, DrawOutcome& outcome, bool profile, const std::function<std::shared_ptr<StorageTexture>()>& lookup) {
     const auto lookupStart = std::chrono::steady_clock::now();
     const auto walkedBefore = profile ? GuestMemory::ThreadCollectedBytes() : 0;
+    const auto waitedBefore = profile ? Recorder::ThreadWaitedMs() : 0.0;
     std::shared_ptr<StorageTexture> resident;
     try {
         resident = lookup();
@@ -1877,6 +1878,13 @@ std::shared_ptr<StorageTexture> refreshResidentTarget(const Context& context, co
         if (lookupUs >= 1000.0) {
             ++outcome.slowLookups;
             outcome.slowLookupUs += lookupUs;
+        }
+        static std::atomic<std::uint32_t> slowReports{0};
+        if (lookupUs >= 50000.0 && slowReports.fetch_add(1, std::memory_order_relaxed) < 400) {
+            std::fprintf(stderr, "[slow-target] 0x%llx %ux%u format %d tile %d samples %u mip %u slice %u: %.1f ms, GPU waits %.1f ms, pages walked %llu, resident %d\n",
+                         static_cast<unsigned long long>(color.address), color.extent.width, color.extent.height, static_cast<int>(color.format), static_cast<int>(color.tileMode), color.samples, color.mip,
+                         color.arraySlice, lookupUs / 1000.0, Recorder::ThreadWaitedMs() - waitedBefore,
+                         static_cast<unsigned long long>((GuestMemory::ThreadCollectedBytes() - walkedBefore) / 4096), resident != nullptr ? 1 : 0);
         }
         outcome.lookupUs += lookupUs;
         outcome.pagesWalked += (GuestMemory::ThreadCollectedBytes() - walkedBefore) / 4096;
