@@ -93,7 +93,7 @@ public:
     Counts Statistics() const;
 
     static constexpr std::size_t RingBytes = 64u << 20u;
-    static constexpr std::size_t RingChunkBytes = 2u << 20u;
+    static constexpr std::size_t RingChunkBytes = 4u << 20u;
 
 private:
     Context context;
