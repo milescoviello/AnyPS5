@@ -764,6 +764,22 @@ void RegistersInterfaces() {
     auto integer = image;
     integer.numericClass = ShaderRecompiler::IrTextureNumericClass::Uint;
     Require(ResourceMaterializer::DeviceImageInterfaceId(integer, ResourceMaterializer::RuntimeImageModes(integer)) != id, "an image of another numeric class has another interface");
+    const auto differingIn = [&](const std::string& field, bool hashed, auto change) {
+        auto other = image;
+        change(other);
+        const auto otherId = ResourceMaterializer::DeviceImageInterfaceId(other, modes);
+        Require(ResourceMaterializer::RegisterDeviceImageInterface(other, modes) == otherId, "an image differing only in " + field + " registers");
+        Require((otherId != id) == hashed, "an image differing only in " + field + (hashed ? " has another interface" : " shares the interface"));
+    };
+    differingIn("adjustedSample", false, [](ShaderRecompiler::ImageResource& other) { other.adjustedSample = !other.adjustedSample; });
+    differingIn("dimensionQueryOnly", true, [](ShaderRecompiler::ImageResource& other) { other.dimensionQueryOnly = !other.dimensionQueryOnly; });
+    differingIn("sampledOnly", true, [](ShaderRecompiler::ImageResource& other) { other.sampledOnly = !other.sampledOnly; });
+    differingIn("optionalDescriptor", false, [](ShaderRecompiler::ImageResource& other) { other.optionalDescriptor = !other.optionalDescriptor; });
+    differingIn("targetMerge", true, [](ShaderRecompiler::ImageResource& other) { other.targetMerge = !other.targetMerge; });
+    auto otherModes = modes;
+    otherModes.front().sampledOnly = !otherModes.front().sampledOnly;
+    const auto modeId = ResourceMaterializer::DeviceImageInterfaceId(image, otherModes);
+    Require(ResourceMaterializer::RegisterDeviceImageInterface(image, otherModes) == modeId && modeId != id, "a mode differing only in sampledOnly registers under another interface");
 }
 
 void DevicePathRefusals() {

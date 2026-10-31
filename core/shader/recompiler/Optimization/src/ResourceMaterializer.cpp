@@ -2694,6 +2694,8 @@ ImageResource deviceInterfaceImage(const ImageResource& image) {
     auto normalized = image;
     normalized.source = 0u;
     normalized.firstUsePc = 0u;
+    normalized.adjustedSample = false;
+    normalized.optionalDescriptor = false;
     if (normalized.table != NoTable) normalized.table = 0u;
     return normalized;
 }
@@ -2713,7 +2715,7 @@ std::uint64_t mixImageInterface(std::uint64_t hash, const ImageResource& image) 
     mix((image.read ? 1u : 0u) | (image.written ? 2u : 0u) | (image.atomic ? 4u : 0u) | (image.atomic64 ? 8u : 0u) | (image.depthCompare ? 16u : 0u) | (image.cube ? 32u : 0u) | (image.r128 ? 64u : 0u) | (image.srgbDecode ? 128u : 0u));
     mix((image.srgbDecodeCompatible ? 1u : 0u) | (image.depthBits ? 2u : 0u) | (image.depthUnorm16 ? 4u : 0u) | (image.packed ? 8u : 0u) | (image.fmaskCompatible ? 16u : 0u) | (image.depthBitsCompatible ? 32u : 0u) | (image.constantSwizzle ? 64u : 0u) | (image.constantSwizzleCompatible ? 128u : 0u));
     mix((image.flatVolumeCompatible ? 1u : 0u) | (image.flatLineCompatible ? 2u : 0u) | (image.foldTexelOffsetsOnly ? 4u : 0u) | (image.table != NoTable ? 8u : 0u) | (image.deviceTable ? 16u : 0u) | (image.singleMipPlaneBiasCompatible ? 32u : 0u) | (image.flatVolumeLineCompatible ? 64u : 0u) | (image.cubeFaceCompatible ? 128u : 0u));
-    mix((image.volumeArraySampleCompatible ? 1u : 0u) | (image.convertedSamples ? 2u : 0u) | (image.remappedDepth1D ? 4u : 0u));
+    mix((image.volumeArraySampleCompatible ? 1u : 0u) | (image.convertedSamples ? 2u : 0u) | (image.remappedDepth1D ? 4u : 0u) | (image.dimensionQueryOnly ? 8u : 0u) | (image.sampledOnly ? 16u : 0u) | (image.targetMerge ? 32u : 0u));
     mix(image.srgbDecodeFormats);
     mix(image.byElements);
     mix(image.byComponents);
