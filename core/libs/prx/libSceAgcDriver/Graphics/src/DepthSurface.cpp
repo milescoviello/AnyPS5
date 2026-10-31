@@ -16,6 +16,8 @@
 #include "prx/libSceAgcDriver/Graphics/include/TextureTiling.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include "RdnaDecoder/include/RdnaDecoder/RdnaDescriptorFormat.hpp"
+#include <execinfo.h>
+#include <dlfcn.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -86,6 +88,27 @@ struct DepthGuard {
     std::shared_ptr<std::atomic<bool>> hostWritten;
     std::shared_ptr<std::atomic<bool>> hostEverWritten;
 };
+
+void traceDeactivate(const char* site, const DepthGuard& range, std::uint64_t address, std::size_t bytes) {
+    static const bool trace = std::getenv("APS5_TRACE_DEPTH_DEACTIVATE") != nullptr;
+    static std::atomic<std::uint32_t> reports{0};
+    if (!trace || !range.active->load(std::memory_order_acquire) || reports.fetch_add(1, std::memory_order_relaxed) >= 300) return;
+    void* frames[24];
+    const int count = backtrace(frames, 24);
+    std::string stack;
+    for (int index = 1; index < count && index < 15; ++index) {
+        Dl_info info{};
+        char part[96];
+        if (dladdr(frames[index], &info) != 0 && info.dli_fname != nullptr) {
+            const char* name = std::strrchr(info.dli_fname, '/');
+            std::snprintf(part, sizeof(part), " %s+0x%llx", name != nullptr ? name + 1 : info.dli_fname, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(frames[index]) - reinterpret_cast<std::uintptr_t>(info.dli_fbase)));
+        } else {
+            std::snprintf(part, sizeof(part), " %p", frames[index]);
+        }
+        stack += part;
+    }
+    std::fprintf(stderr, "[depth-deactivate] %s: guard 0x%llx+0x%zx by 0x%llx+0x%zx:%s\n", site, static_cast<unsigned long long>(range.address), range.bytes, static_cast<unsigned long long>(address), bytes, stack.c_str());
+}
 
 std::shared_mutex& depthGuardMutex() {
     static std::shared_mutex mutex;
@@ -2644,7 +2667,10 @@ void RequireNoResidentDepthRead_nid_no_patch(std::uint64_t address, std::size_t 
         if (overlaps(range)) Require(!range.hostWritten->load(std::memory_order_acquire), "sample-preserving guest publication of native multisample depth is not implemented");
     }
     for (const auto& range : depthGuards()) {
-        if (overlaps(range) && !range.hostEverWritten->load(std::memory_order_acquire)) range.active->store(false, std::memory_order_release);
+        if (overlaps(range) && !range.hostEverWritten->load(std::memory_order_acquire)) {
+            traceDeactivate("read", range, address, bytes);
+            range.active->store(false, std::memory_order_release);
+        }
     }
     std::erase_if(depthGuards(), [](const auto& range) { return !range.active->load(std::memory_order_acquire); });
     anyDepthGuard().store(!depthGuards().empty(), std::memory_order_release);
@@ -2700,7 +2726,10 @@ void RetireUnmappedDepth_nid_no_patch(std::uintptr_t address, std::size_t bytes)
         range.live = std::move(remaining);
     }
     for (const auto& range : depthGuards()) {
-        if (std::ranges::all_of(depthGuards(), [&](const auto& part) { return part.active != range.active || part.live.empty(); })) range.active->store(false, std::memory_order_release);
+        if (std::ranges::all_of(depthGuards(), [&](const auto& part) { return part.active != range.active || part.live.empty(); })) {
+            traceDeactivate("unmap", range, address, bytes);
+            range.active->store(false, std::memory_order_release);
+        }
     }
     std::erase_if(depthGuards(), [](const auto& range) { return !range.active->load(std::memory_order_acquire); });
     anyDepthGuard().store(!depthGuards().empty(), std::memory_order_release);
