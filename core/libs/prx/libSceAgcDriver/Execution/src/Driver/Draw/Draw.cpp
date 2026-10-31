@@ -188,15 +188,28 @@ struct DrawTail {
 
 namespace {
 
-void noteFinisherHandOff(bool handed) {
+constexpr std::size_t KeptReasons = 8;
+constexpr const char* KeptReasonNames[KeptReasons] = {"not pipelined", "indirect", "profiled", "locked prepare", "dump", "traced", "verify", "deferred labels"};
+
+void noteFinisherHandOff(bool handed, std::uint32_t keptBy = 0) {
     static std::atomic<std::uint64_t> handedOff{0}, kept{0};
+    static std::atomic<std::uint64_t> keptReasons[KeptReasons]{};
     static std::atomic<std::int64_t> reportedAt{0};
     (handed ? handedOff : kept).fetch_add(1, std::memory_order_relaxed);
+    for (std::size_t i = 0; i < KeptReasons; ++i) {
+        if ((keptBy & (1u << i)) != 0) keptReasons[i].fetch_add(1, std::memory_order_relaxed);
+    }
     static const bool stats = std::getenv("APS5_PIPELINE_STATS") != nullptr || std::getenv("APS5_PROFILE_DRAW") != nullptr;
     if (!stats) return;
     const auto tenSeconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10;
     if (reportedAt.exchange(tenSeconds, std::memory_order_relaxed) == tenSeconds) return;
-    AgcDriver::ProfilePrint_nid_no_patch("[finisher] draws (10 s): %llu handed to the draw finisher, %llu finished on the worker%s\n", static_cast<unsigned long long>(handedOff.exchange(0)), static_cast<unsigned long long>(kept.exchange(0)), DrawFinisher::DrainText().c_str());
+    std::string reasons;
+    for (std::size_t i = 0; i < KeptReasons; ++i) {
+        char text[64];
+        std::snprintf(text, sizeof(text), "%s %s %llu", i == 0 ? "" : ",", KeptReasonNames[i], static_cast<unsigned long long>(keptReasons[i].exchange(0)));
+        reasons += text;
+    }
+    AgcDriver::ProfilePrint_nid_no_patch("[finisher] draws (10 s): %llu handed to the draw finisher, %llu finished on the worker (kept by:%s)%s\n", static_cast<unsigned long long>(handedOff.exchange(0)), static_cast<unsigned long long>(kept.exchange(0)), reasons.c_str(), DrawFinisher::DrainText().c_str());
 }
 
 }
@@ -770,7 +783,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         timing.Mark("draw_handed_off");
         return drawn();
     }
-    noteFinisherHandOff(false);
+    noteFinisherHandOff(false, (!pipelined || !DrawFinisher::Enabled() ? 1u : 0u) | (drawParameters.indirect ? 2u : 0u) | (profile ? 4u : 0u) | (lockedPrepare ? 8u : 0u) | (dumpTarget != 0 || dumpSlot1 != 0 ? 16u : 0u) | (tracePrograms ? 32u : 0u) | (verifyDrawDataHits() ? 64u : 0u) | (!deferredLabels().labels.empty() ? 128u : 0u));
     if (DrawFinisher::Busy()) {
         DrawFinisher::Get().Drain();
         if (DrawFinisher::Overlap()) DrawFinisher::NoteDrain(DrawFinisher::DrainSite::Kept, true);
