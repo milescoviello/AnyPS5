@@ -3,6 +3,7 @@
 #include "prx/libSceAgcDriver/Execution/include/CaptureTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Diagnostics.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawPipeline.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/DepthSurface.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/DrawWriteRanges.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Draw/DrawProgramTrace.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Driver/Memory/DrawWriteRanges.hpp"
@@ -1393,6 +1394,8 @@ DrawVerdict Driver::finishDraw(DrawTail& tail, PerformanceTimer& timing) {
 
 void Driver::commitDraw(std::shared_ptr<VulkanDevice> localDevice, std::uint32_t queue, const Graphics::State& graphics, const Pm4::DrawParameters& drawParameters, std::span<const Graphics::CompiledShader> stages, std::span<const Graphics::GuestMemorySnapshot> snapshots, const std::shared_ptr<const DrawRecipe>& recipe, const std::vector<std::shared_ptr<DispatchVariant>>& recipeStages, std::uint64_t drawKey, VulkanDevice::DrawTraceContext trace, std::uint64_t shape) {
     const auto* tracePtr = trace.token != 0 ? &trace : nullptr;
+    static const bool pretouchHtile = std::getenv("APS5_PRETOUCH_HTILE") != nullptr;
+    if (pretouchHtile && graphics.depth.has_value() && graphics.depth->htileAddress != 0 && GuestMemory::GpuMutex().DepthOnThisThread() == 0) GuestMemory::FlushGpuWrites(graphics.depth->htileAddress, static_cast<std::size_t>(Graphics::HtileMetadataBytes(graphics.depth->extent)));
     GuestMemory::TagGpuLockSite(GuestMemory::GpuLockSite::Draw);
     std::lock_guard gpuLock(GuestMemory::GpuMutex());
     if (auto current = device.Load(); current != nullptr && current != localDevice) localDevice = std::move(current);
