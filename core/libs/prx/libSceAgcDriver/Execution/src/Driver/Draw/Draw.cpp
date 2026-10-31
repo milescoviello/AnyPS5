@@ -786,7 +786,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         timing.Mark("draw_handed_off");
         return drawn();
     }
-    noteFinisherHandOff(false, (!pipelined || !DrawFinisher::Enabled() ? 1u : 0u) | (drawParameters.indirect ? 2u : 0u) | (profile ? 4u : 0u) | (lockedPrepare ? 8u : 0u) | (dumpTarget != 0 || dumpSlot1 != 0 ? 16u : 0u) | (tracePrograms ? 32u : 0u) | (verifyDrawDataHits() ? 64u : 0u) | (!deferredLabels().labels.empty() ? 128u : 0u));
+    noteFinisherHandOff(false, (!pipelined || !DrawFinisher::Enabled() ? 1u : 0u) | (drawParameters.indirect ? 2u : 0u) | (profile && !profileHandOff ? 4u : 0u) | (lockedPrepare ? 8u : 0u) | (dumpTarget != 0 || dumpSlot1 != 0 ? 16u : 0u) | (tracePrograms ? 32u : 0u) | (verifyDrawDataHits() ? 64u : 0u) | (!deferredLabels().labels.empty() ? 128u : 0u));
     if (DrawFinisher::Busy()) {
         DrawFinisher::Get().Drain();
         if (DrawFinisher::Overlap()) DrawFinisher::NoteDrain(DrawFinisher::DrainSite::Kept, true);
