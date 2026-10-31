@@ -2250,7 +2250,11 @@ bool StorageTexture::refresh(std::uint32_t firstLayer, std::uint32_t lastLayer) 
     // stamped); an untracked unit is stored whole by that write-back, and a unit pending in both
     // images takes the old order (store, then this image re-uploads it).
     auto alias = scoped ? std::shared_ptr<StorageTexture>{} : pendingAlias();
-    if (alias != nullptr && !(ProvedClearKeys(descriptor, guestBytes, keyProof) == DccKeys::Uncompressed && HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) != nullptr)) alias = nullptr;
+    std::size_t aliasOutcome = scoped ? 1u : alias == nullptr ? 0u : 5u;
+    if (alias != nullptr && !(ProvedClearKeys(descriptor, guestBytes, keyProof) == DccKeys::Uncompressed && HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) != nullptr)) {
+        aliasOutcome = HostImportFor(context, descriptor.baseAddress, static_cast<std::size_t>(guestBytes)) == nullptr ? 3u : 2u;
+        alias = nullptr;
+    }
     if (alias != nullptr) {
         std::vector<std::uint8_t> aliasStamped(trackedLayers);
         if (!GuestMemory::ChangedBlocks(descriptor.baseAddress, static_cast<std::size_t>(guestBytes), alias->layerGeneration, aliasStamped)) alias = nullptr;
@@ -2261,6 +2265,7 @@ bool StorageTexture::refresh(std::uint32_t firstLayer, std::uint32_t lastLayer) 
                 break;
             }
         }
+        if (alias == nullptr) aliasOutcome = 4u;
     }
     const auto scopeBegin = scoped ? layerBegin(firstLayer) : descriptor.baseAddress;
     const auto scopeBytes = scoped ? static_cast<std::size_t>(layerBegin(lastLayer - 1) + layerBytes(lastLayer - 1) - scopeBegin) : static_cast<std::size_t>(guestBytes);
@@ -2268,7 +2273,28 @@ bool StorageTexture::refresh(std::uint32_t firstLayer, std::uint32_t lastLayer) 
     handedOver.clear();
     handedUnits.clear();
     const auto handOverKeys = alias == nullptr && !scoped ? clearHandOver() : std::nullopt;
+    const auto flushStart = profile ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     const bool flushed = !handOverKeys.has_value() && FlushPending(scopeBegin, scopeBytes, alias.get(), "storage refresh", PublishScope::None);
+    if (profile) {
+        static constexpr const char* outcomeNames[6] = {"no alias", "scoped", "alias keys", "alias without import", "alias units", "alias borrowed"};
+        static std::atomic<std::uint64_t> outcomes[6]{}, flushes[6]{}, flushUs[6]{};
+        static std::atomic<std::int64_t> reportedAt{0};
+        outcomes[aliasOutcome].fetch_add(1, std::memory_order_relaxed);
+        if (flushed) {
+            flushes[aliasOutcome].fetch_add(1, std::memory_order_relaxed);
+            flushUs[aliasOutcome].fetch_add(static_cast<std::uint64_t>(std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - flushStart).count()), std::memory_order_relaxed);
+        }
+        const auto tenSeconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count() / 10;
+        if (reportedAt.exchange(tenSeconds, std::memory_order_relaxed) != tenSeconds) {
+            std::string line;
+            for (std::size_t i = 0; i < 6; ++i) {
+                char text[128];
+                std::snprintf(text, sizeof(text), "%s %s %llu (flushed %llu, %.1f ms)", i == 0 ? "" : ";", outcomeNames[i], static_cast<unsigned long long>(outcomes[i].exchange(0)), static_cast<unsigned long long>(flushes[i].exchange(0)), static_cast<double>(flushUs[i].exchange(0)) / 1000.0);
+                line += text;
+            }
+            AgcDriver::ProfilePrint_nid_no_patch("[refresh-alias] (10 s) storage refreshes past their proof by alias outcome:%s\n", line.c_str());
+        }
+    }
     if (profile && flushed) start = LookupOutcomes::Add(LookupOutcomes::PendingFlush, start);
     // `original` holds the guest bytes the image was last uploaded from or written back as; while the
     // guest memory and the DCC keys still match, the image content is current. Pages nobody wrote
