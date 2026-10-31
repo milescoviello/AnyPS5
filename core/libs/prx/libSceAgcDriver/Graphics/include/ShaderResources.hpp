@@ -201,6 +201,7 @@ public:
     PipelineSetLayouts SetLayouts() const;
     bool HeapStage() const { return heapStage; }
     void RefreshHeapStage(std::span<const CompiledShader> shaders);
+    void RequireGuestBuffers() const { requireGuestBuffers(); }
     void Bind(VkCommandBuffer commands, VkPipelineBindPoint bindPoint, VkPipelineLayout layout) const;
     void BindDescriptorHeaps(VkCommandBuffer commands) const;
     struct DrawBindings {
