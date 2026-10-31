@@ -21,10 +21,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-#include <array>
-#include <atomic>
-#include <cstdio>
-#include <cstdlib>
 
 namespace ShaderRecompiler {
 namespace {
@@ -1938,9 +1934,7 @@ private:
         m_memoryUsers.clear();
     }
 
-    enum DeviceRefusal : std::size_t { DeviceOk, RefusedOpcode, RefusedMemory, RefusedPacked, RefusedCompare, RefusedSamplerArguments, RefusedTableSampler, RefusedUnnormalized, RefusedSamplerColumn, RefusedStageOff, DeviceRefusalCount };
-
-    DeviceRefusal DeviceAccessRefusal(const IrValue& inst) {
+    bool DeviceAccess(const IrValue& inst) {
         switch (inst.Opcode()) {
             case IrOpcode::ImageSampleRaw:
             case IrOpcode::ImageGatherRaw:
@@ -1949,71 +1943,34 @@ private:
             case IrOpcode::ImageQueryLod:
                 break;
             default:
-                return RefusedOpcode;
+                return false;
         }
         const auto flags = inst.Flags<MemoryFlags>();
-        if (flags.index >= m_program.Resources().memoryInfo.size()) return RefusedMemory;
+        if (flags.index >= m_program.Resources().memoryInfo.size()) return false;
         const auto& memory = m_program.Resources().memoryInfo[flags.index];
-        if (memory.imagePacked || memory.imageByElements != 0u) return RefusedPacked;
-        if ((memory.imageSampleFlags & RdnaImageSampleFlagCompare) != 0u) return RefusedCompare;
-        if (!ImageOpcodeInfoOf(inst.Opcode()).needsSampler) return DeviceOk;
-        if (inst.ArgumentCount() < 2u) return RefusedSamplerArguments;
+        if (memory.imagePacked || memory.imageByElements != 0u || (memory.imageSampleFlags & RdnaImageSampleFlagCompare) != 0u) return false;
+        if (!ImageOpcodeInfoOf(inst.Opcode()).needsSampler) return true;
+        if (inst.ArgumentCount() < 2u) return false;
         const IrValue& sampler = *inst.Argument(1)->Resolve();
-        if (!DirectSampler(sampler)) return RefusedTableSampler;
+        if (!DirectSampler(sampler)) return false;
         const IrValue* word0 = sampler.Argument(0)->Resolve();
-        return word0->HasImmediate() && word0->Type() == IrType::U32 && (word0->ImmediateU32() & samplerForceUnnormalizedBit) != 0u ? RefusedUnnormalized : DeviceOk;
-    }
-
-    bool DeviceAccess(const IrValue& inst) {
-        return DeviceAccessRefusal(inst) == DeviceOk;
-    }
-
-    static void NoteDeviceColumns(std::size_t columns, std::size_t device, const std::array<std::uint64_t, DeviceRefusalCount>& refused) {
-        static const bool trace = std::getenv("APS5_TRACE_DEVICE_COLUMNS") != nullptr;
-        if (!trace || columns == 0u) return;
-        static std::atomic<std::uint64_t> programs{0}, total{0}, onDevice{0};
-        static std::array<std::atomic<std::uint64_t>, DeviceRefusalCount> reasons{};
-        total.fetch_add(columns, std::memory_order_relaxed);
-        onDevice.fetch_add(device, std::memory_order_relaxed);
-        for (std::size_t index = 0; index < DeviceRefusalCount; ++index) reasons[index].fetch_add(refused[index], std::memory_order_relaxed);
-        const auto seen = programs.fetch_add(1, std::memory_order_relaxed) + 1u;
-        if (seen % 25u != 0u && seen > 5u) return;
-        constexpr std::array<const char*, DeviceRefusalCount> names{"ok", "opcode", "memory info", "packed or by-elements", "depth compare", "sampler arguments", "sampler not direct (table sampler)", "unnormalized sampler", "sampler column", "device tables off for the stage"};
-        std::fprintf(stderr, "[device-columns] %llu programs with table columns: %llu columns, %llu on the device; off by (first refusing access per column):", static_cast<unsigned long long>(seen), static_cast<unsigned long long>(total.load()), static_cast<unsigned long long>(onDevice.load()));
-        for (std::size_t index = 1; index < DeviceRefusalCount; ++index) {
-            const auto count = reasons[index].load(std::memory_order_relaxed);
-            if (count != 0u) std::fprintf(stderr, " %s %llu", names[index], static_cast<unsigned long long>(count));
-        }
-        std::fprintf(stderr, "\n");
+        return !(word0->HasImmediate() && word0->Type() == IrType::U32 && (word0->ImmediateU32() & samplerForceUnnormalizedBit) != 0u);
     }
 
     void PlanDeviceColumns() {
         m_deviceSources.assign(m_sources.size(), 0u);
-        std::array<std::uint64_t, DeviceRefusalCount> refused{};
-        if (!m_deviceImageTables) {
-            refused[RefusedStageOff] = m_tableColumns.size();
-            NoteDeviceColumns(m_tableColumns.size(), 0u, refused);
-            return;
-        }
+        if (!m_deviceImageTables) return;
         for (const auto& plan : m_tableColumns) {
             const auto& column = *m_sources[plan.source].tableColumn;
             if (!column.sampler) m_deviceSources[plan.source] = 1u;
-            else ++refused[RefusedSamplerColumn];
         }
         for (auto& block : m_program.Blocks()) {
             for (IrValue* inst : block->Instructions()) {
                 if (ImageOpcodeInfoOf(inst->Opcode()).access == ImageAccess::None || inst->ArgumentCount() == 0u) continue;
                 const auto* column = FindTableColumn(*inst->Argument(0)->Resolve());
-                if (column == nullptr) continue;
-                const auto refusal = DeviceAccessRefusal(*inst);
-                if (refusal == DeviceOk) continue;
-                if (m_deviceSources[column->source] != 0u) ++refused[refusal];
-                m_deviceSources[column->source] = 0u;
+                if (column != nullptr && !DeviceAccess(*inst)) m_deviceSources[column->source] = 0u;
             }
         }
-        std::size_t device = 0;
-        for (const auto& plan : m_tableColumns) device += m_deviceSources[plan.source] != 0u ? 1u : 0u;
-        NoteDeviceColumns(m_tableColumns.size(), device, refused);
         for (std::uint32_t source = 0; source < m_sources.size(); ++source) {
             if (m_deviceSources[source] != 0u) m_sources[source].tableColumn->keyDomains.clear();
         }
