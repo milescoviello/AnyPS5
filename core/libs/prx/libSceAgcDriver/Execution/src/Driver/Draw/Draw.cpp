@@ -300,6 +300,20 @@ bool EmptyIndirectSkip() {
     return enabled;
 }
 
+bool DeferIndirectDrain() {
+    static const bool deferred = std::getenv("APS5_DEFER_INDIRECT_DRAIN") != nullptr;
+    return deferred;
+}
+
+bool IndirectArgumentsPending(const Pm4::DrawParameters::IndirectDraw& indirect) {
+    auto& pipeline = DrawPipeline::Queue0();
+    return pipeline.Busy() && (pipeline.Overlaps(indirect.arguments, static_cast<std::size_t>(std::max<std::uint64_t>(indirect.RangeBytes(), indirect.recordBytes))) || (indirect.countIndirect && pipeline.Overlaps(indirect.countAddress, 4)));
+}
+
+void DrainBeforeArgumentReads(const Pm4::DrawParameters::IndirectDraw& indirect) {
+    if (DeferIndirectDrain() && DrawPipeline::Active() && IndirectArgumentsPending(indirect)) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Indirect);
+}
+
 struct CpuIndirectProgramsStorage {};
 
 std::unordered_map<std::uint64_t, bool>& CpuIndirectPrograms() {
@@ -348,10 +362,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
     const bool pipelined = tail.pipelined;
     static const bool pipelinedIndirect = std::getenv("APS5_NO_PIPELINED_INDIRECT") == nullptr;
     if (pipelined && drawParameters.indirect) {
-        const auto& indirect = *drawParameters.indirect;
-        auto& pipeline = DrawPipeline::Queue0();
-        const bool overlaps = pipeline.Busy() && (pipeline.Overlaps(indirect.arguments, static_cast<std::size_t>(std::max<std::uint64_t>(indirect.RangeBytes(), indirect.recordBytes))) || (indirect.countIndirect && pipeline.Overlaps(indirect.countAddress, 4)));
-        if (!pipelinedIndirect || overlaps) pipeline.Drain(DrawPipeline::DrainReason::Indirect);
+        if (!pipelinedIndirect || (!DeferIndirectDrain() && IndirectArgumentsPending(*drawParameters.indirect))) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Indirect);
     }
     auto& traceIndirect = tail.traceIndirect;
     if (const auto verdict = precheckDraw(queue, submission, packetOffset, packet, drawParameters, rejected, traceIndirect)) {
@@ -534,6 +545,7 @@ DrawVerdict Driver::draw(QueueState& queue, std::span<const std::uint32_t> packe
         const auto known = cpuIndirectPrograms.find(programs.front().binary.codeAddress);
         if (known != cpuIndirectPrograms.end() && known->second) {
             const auto& indirect = *drawParameters.indirect;
+            DrainBeforeArgumentReads(indirect);
             recordQueuedLabelsBeforeRead(submission.queue);
             const auto readStart = std::chrono::steady_clock::now();
             const auto count = std::min(indirect.countIndirect ? Pm4::ReadDrawCount(indirect) : indirect.count, indirect.count);
@@ -1228,6 +1240,7 @@ DrawVerdict Driver::finishDraw(DrawTail& tail, PerformanceTimer& timing) {
             }
             programResults[i] = &results[resultIndex[i]];
         }
+        DrainBeforeArgumentReads(indirect);
         recordQueuedLabelsBeforeRead(submission.queue);
         const auto readStart = std::chrono::steady_clock::now();
         const auto count = std::min(indirect.countIndirect ? Pm4::ReadDrawCount(indirect) : indirect.count, indirect.count);
