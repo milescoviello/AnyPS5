@@ -1,6 +1,7 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_TEXTURE_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_TEXTURE_HPP
 
+#include "prx/libSceAgcDriver/Graphics/include/BindlessHeap.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/DccMetadata.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestTextureResource.hpp"
@@ -57,7 +58,7 @@ struct OwnedImage {
     std::uint32_t memoryType = 0;
 };
 
-class Texture {
+class Texture : public HeapSlotOwner {
 public:
     Texture(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, VkComponentMapping components, std::span<const std::byte> snapshot, bool depthCompare = false, const VkClearColorValue* clear = nullptr);
     Texture(const Context& context, const std::shared_ptr<ResidentColor>& source, const GuestTextureResource& descriptor, VkComponentMapping components);
@@ -121,12 +122,8 @@ public:
     void MarkRefreshedPerUse() { perUseCopy = PerUseCopy::RemadePerUse; }
     bool Released() const { return released.load(std::memory_order_acquire); }
     void MarkReleased() { released.store(true, std::memory_order_release); }
-    std::uint32_t HeapHolds() const { return heapHolds.load(std::memory_order_relaxed); }
-    void AddHeapHold() { heapHolds.fetch_add(1, std::memory_order_relaxed); }
-    void DropHeapHold() { heapHolds.fetch_sub(1, std::memory_order_relaxed); }
 
 private:
-    std::atomic<std::uint32_t> heapHolds{0};
     void release() noexcept;
     bool refreshBlockCopy();
     bool refreshSrgbExpand();
@@ -179,7 +176,7 @@ VkFormat SrgbTwinFormat(const Context& context, VkFormat format);
 // either at once (WriteBack) or deferred: MarkDirty keeps them on the GPU until something reads that
 // memory (FlushPending, through the GuestMemory flush hook), the image is refreshed after a CPU write,
 // or it leaves the cache. Dispatches reusing the image meanwhile skip the round trip entirely.
-class StorageTexture : public std::enable_shared_from_this<StorageTexture> {
+class StorageTexture : public std::enable_shared_from_this<StorageTexture>, public HeapSlotOwner {
 public:
     static std::shared_ptr<StorageTexture> Create(const Context& context, TextureDetiler& detiler, const GuestTextureResource& descriptor, std::uint32_t mipLevel);
     ~StorageTexture();

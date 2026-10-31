@@ -3862,7 +3862,6 @@ bool VulkanDevice::present(std::uint32_t width, std::uint32_t height, bool opaqu
     APS5_LOG_OUT_DEBUG("Presentation command buffer begin commands=%p image=%p", reinterpret_cast<void*>(commands), reinterpret_cast<void*>(state->images[index]));
     using CommandClass = Graphics::Recorder::CommandClass;
     Graphics::Recorder::CountPresent();
-    if (Graphics::GpuHeapEnabled()) Graphics::BindlessHeap::SweepIfDue();
     if (Graphics::Recorder::GpuTimingEnabled()) {
         if (slot.queries == VK_NULL_HANDLE) {
             VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -4232,7 +4231,7 @@ void VulkanDevice::FallBackDeviceImages(const ShaderRecompiler::RecompileResult&
 ShaderRecompiler::SpirvTarget VulkanDevice::ComputeTarget(std::uint32_t waveSize) const {
     auto target = Target();
     if (waveSize == 32u && state->computeWave32) target.subgroupSize = 32u;
-    target.gpuResolvedImages = Graphics::HeapComputeEnabled();
+    target.gpuResolvedImages = Graphics::DescriptorHeapEnabled();
     return target;
 }
 

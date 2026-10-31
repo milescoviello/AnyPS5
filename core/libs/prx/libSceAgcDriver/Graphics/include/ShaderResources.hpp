@@ -4,6 +4,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/Resources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/BdaResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/BindlessHeap.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Sampler.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
@@ -261,6 +262,7 @@ public:
     static bool SpaceReuseDisabled();
     bool BdaReadOnly() const { return usesBda && bdaReadOnly; }
     bool RetakeSpace() { return guestMemory.RetakeSpace(); }
+    bool AddressTableGuardCurrent();
     bool SnapshotsServedInPlace(std::span<const GuestMemorySnapshot> snapshots) const { return guestMemory.SnapshotsServedInPlace(snapshots); }
     std::shared_ptr<const void> ReleaseSpace() { return guestMemory.ReleaseSpace(); }
     bool UsesAddressTable() const { return usesBda; }
@@ -660,8 +662,8 @@ private:
     VkImageView heapSampledView(std::size_t index) const;
     VkImageView heapStorageView(std::size_t index, std::uint32_t binding) const;
     VkImageView heapMultisampleStorageView(std::size_t index) const;
+    const HeapSlotOwner* heapMultisampleStorageOwner(std::size_t index) const;
     void appendHeapSlotKey(VkShaderStageFlags stageBit, std::vector<std::uintptr_t>& key) const;
-    static bool heapSlotsCurrent(const BindlessHeap& heap, const HeapStageState& state);
     void takeHeapSlots(BindlessHeap& heap, HeapStageState& state, VkShaderStageFlags stageBit, std::span<const std::uintptr_t> key);
     static void noteHeapSlotGenerations(const BindlessHeap& heap, HeapStageState& state);
     void verifyHeapSlots(const BindlessHeap& heap, const HeapStageState& state, VkShaderStageFlags stageBit) const;
@@ -711,7 +713,7 @@ private:
     std::vector<bool> textureBaseLevel;
     std::vector<bool> textureSrgb;
     std::vector<std::shared_ptr<StorageTexture>> storageTextures;
-    std::vector<VkImageView> multisampleStorageViews;
+    std::vector<MultisampleStorage> multisampleStorage;
     std::vector<std::uint32_t> storageMips;
     std::vector<std::uint64_t> storageKeys;
     std::vector<bool> storageFirstLayer;

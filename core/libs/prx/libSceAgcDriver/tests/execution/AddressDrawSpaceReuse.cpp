@@ -5,6 +5,7 @@
 #include "prx/libSceAgcDriver/Graphics/include/ColorTargetLayout.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Draw.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestBufferMemory.hpp"
+#include "prx/libSceAgcDriver/Graphics/include/MultisampleTarget.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/ShaderResources.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Texture.hpp"
 #include "prx/libc/include/GuestAllocations.hpp"
@@ -416,6 +417,75 @@ void NoRecords(Scene& scene) {
     Require(scene.DrawnColor() == 60, "address draw space reuse: the draw after the indirect draw did not read the guest constant");
 }
 
+constexpr std::size_t MultisampleTargetOffset = 32768;
+
+bool MultisampleTargetsAvailable(Scene& scene) {
+    const auto context = scene.device.GraphicsContext();
+    if (AgcDriver::GuestMemory::WriteWatched() && (context.limits.framebufferColorSampleCounts & VK_SAMPLE_COUNT_4_BIT) != 0) return true;
+    Require(std::getenv("ANYPS5_REQUIRE_VULKAN") == nullptr, "address draw space reuse: the multisample target cases require write tracking and 4x color targets");
+    std::puts("skipped, the multisample target cases require write tracking and 4x color targets");
+    return false;
+}
+
+void PlaceMultisampleTarget(Scene& scene, std::uint64_t address) {
+    const auto context = scene.device.GraphicsContext();
+    AgcDriver::Graphics::ColorTarget target{};
+    target.address = address;
+    target.surfaceAddress = address;
+    target.extent = {Width, Height};
+    target.surfaceExtent = target.extent;
+    target.format = VK_FORMAT_R8G8B8A8_UNORM;
+    target.tileMode = ColorTileMode::RenderTarget;
+    target.elementBytes = 4;
+    target.bytes = TargetLayout.Bytes();
+    target.samples = 4;
+    std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
+    Require(AgcDriver::Graphics::MultisampleTargetView(context, target) != VK_NULL_HANDLE, "address draw space reuse: the multisample target has no view");
+    scene.device.SubmitRecorded(true);
+    scene.device.WaitIdle();
+}
+
+void RetireMultisampleTargets(Scene& scene) {
+    const auto context = scene.device.GraphicsContext();
+    std::lock_guard gpu(AgcDriver::GuestMemory::GpuMutex());
+    scene.device.WaitIdle();
+    AgcDriver::Graphics::ClearMultisampleTargets(context.device);
+}
+
+std::uint8_t DrawnAfterTarget(Scene& scene, std::uint64_t address) {
+    PlaceMultisampleTarget(scene, address);
+    std::uint8_t color = 0;
+    try {
+        color = scene.DrawnColor();
+    } catch (...) {
+        RetireMultisampleTargets(scene);
+        throw;
+    }
+    RetireMultisampleTargets(scene);
+    return color;
+}
+
+void MultisampleTargetInside(Scene& scene) {
+    if (!MultisampleTargetsAvailable(scene)) return;
+    scene.Store(scene.constants, 0, 130);
+    Require(scene.DrawnColor() == 130 && scene.DrawnColor() == 130, "address draw space reuse: the draws before the multisample target did not read the guest constant");
+    const auto built = Builds();
+    const auto color = DrawnAfterTarget(scene, scene.constants.Address(MultisampleTargetOffset));
+    Require(Builds() == built + 1, "address draw space reuse: a draw after a resident multisample target appeared inside its address space made " + std::to_string(Builds() - built) + " builds instead of 1");
+    Require(color == 130, "address draw space reuse: the build after a resident multisample target appeared inside its address space read " + std::to_string(color) + " instead of 130");
+}
+
+void MultisampleTargetOutside(Scene& scene) {
+    if (!MultisampleTargetsAvailable(scene)) return;
+    scene.Store(scene.constants, 0, 160);
+    Require(scene.DrawnColor() == 160 && scene.DrawnColor() == 160, "address draw space reuse: the draws before the multisample target did not read the guest constant");
+    Pages outside{BlockBytes};
+    const auto built = Builds();
+    const auto color = DrawnAfterTarget(scene, outside.Address());
+    Require(color == 160, "address draw space reuse: the draw after a resident multisample target appeared outside its space read " + std::to_string(color) + " instead of 160");
+    Require(Builds() == built, "address draw space reuse: a draw after a resident multisample target appeared outside its space made " + std::to_string(Builds() - built) + " builds instead of reusing its cached one");
+}
+
 void Disabled(Scene& scene) {
     scene.Store(scene.constants, 0, 70);
     Require(scene.DrawnColor() == 70, "address draw space reuse: the first draw with the reuse off did not read the guest constant");
@@ -441,7 +511,7 @@ struct NamedCase {
     Case run;
 };
 
-constexpr std::array<NamedCase, 7> Cases{{
+constexpr std::array<NamedCase, 9> Cases{{
     {"unchanged", UnchangedInputs},
     {"cpu-write", CpuWrite},
     {"idle-free", IdleFree},
@@ -449,6 +519,8 @@ constexpr std::array<NamedCase, 7> Cases{{
     {"throwing-hit", ThrowingHit},
     {"moved-vertices", MovedVertices},
     {"no-records", NoRecords},
+    {"multisample-target-inside", MultisampleTargetInside},
+    {"multisample-target-outside", MultisampleTargetOutside},
 }};
 
 }

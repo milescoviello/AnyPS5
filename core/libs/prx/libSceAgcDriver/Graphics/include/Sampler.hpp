@@ -1,10 +1,12 @@
 #ifndef CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_SAMPLER_HPP
 #define CORE_LIBS_PRX_LIBSCEAGCDRIVER_GRAPHICS_INCLUDE_SAMPLER_HPP
 
+#include "prx/libSceAgcDriver/Graphics/include/BindlessHeap.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/Context.hpp"
 #include "prx/libSceAgcDriver/Graphics/include/GuestSamplerResource.hpp"
 #include "prx/libSceAgcDriver/Execution/include/Mutex.hpp"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -13,7 +15,7 @@
 
 namespace AgcDriver::Graphics {
 
-class Sampler {
+class Sampler : public HeapSlotOwner {
 public:
     Sampler(const Context& context, const GuestSamplerResource& descriptor);
     ~Sampler();

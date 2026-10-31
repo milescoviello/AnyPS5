@@ -104,7 +104,7 @@ std::uint32_t tableHeapSlot(SpirvEmitterState& state, std::uint32_t part, std::u
                         : part == 1u ? RuntimeAbi::FirstStorageImageBinding
                         : part == 3u ? RuntimeAbi::FirstAtomicImageBinding
                         : part == 4u ? RuntimeAbi::FirstAtomic64ImageBinding
-                        : part == 5u ? RuntimeAbi::FirstStorageImageBinding + 7u
+                        : part == 5u ? RuntimeAbi::FirstUintStorageImageBinding
                                      : 0u;
     const auto clamped = Select(state, u32, Binary(state, spv::OpULessThan, TypeBool(state), slot, ConstantU32(state, slots)), slot, ConstantU32(state, fallback));
     DecorateTableNonUniform(state, clamped);
@@ -123,7 +123,7 @@ std::uint32_t TableStorageImagePointer(SpirvEmitterState& state, DescriptorBindi
     if (found == state.tableImageVariables.end() || !state.tableAccess.active) ExitDescriptorBindingFailure(state, kind, resource, "image storage table array was not emitted for the mode");
     const auto pointer = state.module.AllocateId();
     const auto value = static_cast<std::uint32_t>(kind);
-    const bool uintStorage = value >= RuntimeAbi::FirstStorageImageBinding + 7u && value < RuntimeAbi::FirstStorageImageBinding + 14u;
+    const bool uintStorage = value >= RuntimeAbi::FirstUintStorageImageBinding && value < RuntimeAbi::FirstAtomicImageBinding;
     const auto part = RuntimeAbi::AtomicImageKind(value) ? 3u : RuntimeAbi::Atomic64ImageKind(value) ? 4u : uintStorage ? 5u : 1u;
     state.module.AddFunction(spv::OpAccessChain, pointerType, pointer, found->variable, state.tableAccess.heap ? tableHeapSlot(state, part, state.tableAccess.element, RuntimeAbi::GpuImageHeapSlots) : state.tableAccess.element);
     DecorateTableNonUniform(state, pointer);

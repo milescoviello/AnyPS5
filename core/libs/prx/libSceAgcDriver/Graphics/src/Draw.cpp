@@ -1918,7 +1918,7 @@ ResolvedResources resolveDrawResources(const Context& context, const State& stat
             const auto releaseSpace = [](ShaderResources* resources) { static_cast<void>(resources->ReleaseSpace()); };
             std::unique_ptr<ShaderResources, decltype(releaseSpace)> heldSpace(cached->SpaceReuse() ? cached.get() : nullptr, releaseSpace);
             bool spaceHeld = !cached->SpaceReuse();
-            if (!spaceHeld && cached->RetakeSpace()) spaceHeld = cached->SnapshotsServedInPlace(snapshots);
+            if (!spaceHeld && cached->RetakeSpace()) spaceHeld = cached->AddressTableGuardCurrent() && cached->SnapshotsServedInPlace(snapshots);
             const bool valid = spaceHeld && cached->Revalidate(shaders);
             auto* recorder = Recorder::Active();
             std::optional<std::vector<ShaderResources::MovedBuffer>> moved;

@@ -51,9 +51,14 @@
 namespace AgcDriver::Graphics {
 namespace {
 
+std::uint32_t takenSlot(std::optional<std::uint32_t> slot, const char* what) {
+    Require(slot.has_value(), what);
+    return *slot;
+}
+
 bool UintStorageBinding(std::uint32_t binding) {
     const auto kind = binding % static_cast<std::uint32_t>(ShaderRecompiler::RuntimeAbi::Binding::Count);
-    return kind >= ShaderRecompiler::RuntimeAbi::FirstStorageImageBinding + 7u && kind < ShaderRecompiler::RuntimeAbi::FirstStorageImageBinding + 14u;
+    return kind >= ShaderRecompiler::RuntimeAbi::FirstUintStorageImageBinding && kind < ShaderRecompiler::RuntimeAbi::FirstAtomicImageBinding;
 }
 
 bool overlap(std::uint64_t first, std::size_t firstSize, std::uint64_t second, std::size_t secondSize) {
@@ -233,7 +238,6 @@ std::list<CachedTexture>::iterator findTexture(TextureCache& cache, const Textur
 }
 
 void eraseTexture(TextureCache& cache, std::list<CachedTexture>::iterator it) {
-    if (it->texture != nullptr && it->texture->HeapHolds() != 0u) BindlessHeap::NoteSweepDue();
     cache.bytes -= it->accounted;
     if (it->source != nullptr) {
         for (auto [view, last] = cache.views.equal_range(it->source.get()); view != last; ++view) {
@@ -326,8 +330,7 @@ bool admitTexture(TextureCache& cache, const TextureKey& key, std::uint64_t inco
             ++cache.counts.uncached;
             return false;
         }
-        const auto heapHolds = back->texture != nullptr ? back->texture->HeapHolds() : 0u;
-        const bool keep = back->accounted == 0 || (!over && back->texture.use_count() > 1 + static_cast<long>(heapHolds));
+        const bool keep = back->accounted == 0 || (!over && back->texture.use_count() > 1);
         if (keep && cache.passed < cache.entries.size()) {
             cache.entries.splice(cache.entries.begin(), cache.entries, back);
             ++cache.passed;
@@ -1154,7 +1157,6 @@ std::list<CachedStorageTexture>::iterator findStorageByImage(StorageTextureCache
 std::shared_ptr<StorageTexture> evictStorage(StorageTextureCache& cache, std::list<CachedStorageTexture>::iterator it) {
     auto texture = it->texture;
     it->texture->SetCached(false);
-    if (GpuHeapEnabled()) BindlessHeap::NoteStorageEvicted();
     noteUncached(it->texture);
     it->texture->Flush();
     cache.bytes -= it->accounted;
@@ -1447,7 +1449,6 @@ void ClearCachedTextures(VkDevice device) {
             }
             cleared.push_back(it->texture);
             it->texture->SetCached(false);
-            if (GpuHeapEnabled()) BindlessHeap::NoteStorageEvicted();
             noteUncached(it->texture);
             storage.bytes -= it->accounted;
             storage.index.erase(it->key);
@@ -1476,7 +1477,6 @@ std::uint64_t ReleaseTextureCaches(std::uint64_t bytes, bool newImage) {
         ~Done() { flag = false; }
     } done{releasing};
     std::uint64_t freed = 0;
-    std::uint64_t heapHeldBytes = 0;
     std::size_t sampledEntries = 0;
     std::size_t storageEntries = 0;
     std::size_t storageKept = 0;
@@ -1489,10 +1489,9 @@ std::uint64_t ReleaseTextureCaches(std::uint64_t bytes, bool newImage) {
         if ((inherited && (!newImage || sampledCacheReclaimable == 0)) || (!inherited && !lock.try_lock())) {
             sampledSkipped = true;
         } else {
-            for (auto it = cache.entries.end(); it != cache.entries.begin() && freed + heapHeldBytes < bytes;) {
+            for (auto it = cache.entries.end(); it != cache.entries.begin() && freed < bytes;) {
                 --it;
-                const auto heapHolds = static_cast<long>(it->texture->HeapHolds());
-                if (it->texture.use_count() != 1 + heapHolds || (it->source != nullptr && it->source->Dirty())) continue;
+                if (it->texture.use_count() != 1 || (it->source != nullptr && it->source->Dirty())) continue;
                 const auto allocated = it->texture->AllocationBytes();
                 const auto sourceBytes = it->source != nullptr ? it->source->AllocationBytes() : 0u;
                 const std::weak_ptr<StorageTexture> source = it->source;
@@ -1500,18 +1499,10 @@ std::uint64_t ReleaseTextureCaches(std::uint64_t bytes, bool newImage) {
                 eraseTexture(cache, it);
                 ++cache.counts.evicted;
                 ++sampledEntries;
-                if (heapHolds != 0) heapHeldBytes += allocated;
-                else freed += allocated;
+                freed += allocated;
                 if (source.expired()) freed += sourceBytes;
                 it = next;
             }
-        }
-    }
-    if (heapHeldBytes != 0) {
-        BindlessHeap::NoteSweepDue();
-        if (sampledCacheHeld == 0) {
-            BindlessHeap::SweepIfDue();
-            freed += heapHeldBytes;
         }
     }
     if (freed < bytes) {
@@ -2693,7 +2684,7 @@ void ShaderResources::buildComplete() {
                         write.pImageInfo = images.data() + images.size();
                         for (const auto index : binding.imageAllocations) {
                             if (index == std::numeric_limits<std::size_t>::max()) images.push_back(absentImage(binding.layout.binding));
-                            else if (storageTextures[index] == nullptr) images.push_back({VK_NULL_HANDLE, multisampleStorageViews[index], VK_IMAGE_LAYOUT_GENERAL});
+                            else if (storageTextures[index] == nullptr) images.push_back({VK_NULL_HANDLE, multisampleStorage[index].view, VK_IMAGE_LAYOUT_GENERAL});
                             else images.push_back({VK_NULL_HANDLE, storageAtomic64[index] ? storageTextures[index]->Atomic64View(storageMips[index], storageFirstLayer[index]) : storageAtomic[index] ? storageTextures[index]->AtomicView(storageMips[index], storageFirstLayer[index]) : storageTextures[index]->StorageView(storageMips[index], storageFirstLayer[index], UintStorageBinding(binding.layout.binding)), VK_IMAGE_LAYOUT_GENERAL});
                         }
                         Require(binding.imageAllocations.size() == binding.layout.descriptorCount, "descriptor allocations disagree with compact binding");
@@ -2845,6 +2836,12 @@ bool ShaderResources::NeverReusable(std::span<const CompiledShader> shaders) {
         const bool readOnlyBda = shader.program != nullptr && !shader.program->bdaStores && !SpaceReuseDisabled();
         return shader.program != nullptr && std::any_of(shader.program->bindings.begin(), shader.program->bindings.end(), [loopGuard, readOnlyBda](const ShaderRecompiler::DescriptorBinding& binding) { return (binding.role == ShaderRecompiler::DescriptorRole::BdaPagetable && !readOnlyBda) || (loopGuard && binding.role == ShaderRecompiler::DescriptorRole::FaultBuffer); });
     });
+}
+
+bool ShaderResources::AddressTableGuardCurrent() {
+    if (bda == nullptr) return true;
+    if (const auto cached = guestMemory.CachedAddressTable(); cached.has_value()) return bda->TableGuardCurrent(context.device, *cached->ranges);
+    return bda->TableGuardCurrent(context.device, guestMemory.AddressRanges());
 }
 
 bool ShaderResources::SpaceReuseDisabled() {
@@ -5272,9 +5269,9 @@ void ShaderResources::resolveImageBinding(const ShaderRecompiler::DescriptorBind
         if (resource.dimension == TextureDimension::k2DMsaa) {
             Require(!(element < binding.imageAtomic.size() && binding.imageAtomic[element]) && !(element < binding.imageAtomic64.size() && binding.imageAtomic64[element]), "storage image atomics on a multisampled texture are not implemented");
             storageTextures.push_back(nullptr);
-            multisampleStorageViews.resize(storageTextures.size(), VK_NULL_HANDLE);
+            multisampleStorage.resize(storageTextures.size());
             const bool uintStorage = UintStorageBinding(binding.binding);
-            multisampleStorageViews.back() = MultisampleTargetStorageView(context, resource, uintStorage);
+            multisampleStorage.back() = MultisampleTargetStorageView(context, resource, uintStorage);
             multisampleSources.push_back(resource.baseAddress);
             storageMips.push_back(0);
             storageKeys.push_back(0);
@@ -6424,38 +6421,25 @@ void ShaderResources::writeHeapTableMap(const CompiledShader& shader, std::size_
             continue;
         }
         const auto view = textureFirstLayer[index] ? textures[index]->FirstLayerView() : textures[index]->View();
-        const auto slot = heap.TextureSlot(Abi::FirstImageBinding, textures[index], view, textures[index]->Layout());
-        Require(slot.has_value(), "the global image heap is full");
-        map.push_back(*slot);
+        map.push_back(takenSlot(heap.TextureSlot(Abi::FirstImageBinding, textures[index].get(), view, textures[index]->Layout()), "the global image heap is full"));
     }
-    for (std::size_t element = 0; element < elements; ++element) {
-        const auto index = element < table->elementStorage.size() ? table->elementStorage[element] : noElement;
-        if (index == noElement || storageTextures[index] == nullptr) {
-            map.push_back(storageAbsent);
-            continue;
+    const auto appendStorageSlots = [&](std::uint32_t kind, std::uint32_t absent, const char* full, const auto& wanted, const auto& viewOf) {
+        for (std::size_t element = 0; element < elements; ++element) {
+            const auto index = element < table->elementStorage.size() ? table->elementStorage[element] : noElement;
+            if (!wanted(element) || index == noElement || storageTextures[index] == nullptr) {
+                map.push_back(absent);
+                continue;
+            }
+            map.push_back(takenSlot(heap.StorageSlot(kind, storageTextures[index].get(), viewOf(*storageTextures[index], index)), full));
         }
-        const auto slot = heap.StorageSlot(Abi::FirstStorageImageBinding, storageTextures[index],
-                                           storageTextures[index]->StorageView(storageMips[index], storageFirstLayer[index]));
-        Require(slot.has_value(), "the global storage image heap is full");
-        map.push_back(*slot);
-    }
-    std::uint32_t fallbackSampler = 0;
-    for (const auto index : table->tableSamplers) {
-        if (index == noElement) continue;
-        const auto slot = heap.SamplerSlot(samplers[index]);
-        Require(slot.has_value(), "the global sampler heap is full");
-        fallbackSampler = *slot;
-        break;
-    }
-    for (const auto index : table->tableSamplers) {
-        if (index == noElement) {
-            map.push_back(fallbackSampler);
-            continue;
-        }
-        const auto slot = heap.SamplerSlot(samplers[index]);
-        Require(slot.has_value(), "the global sampler heap is full");
-        map.push_back(*slot);
-    }
+    };
+    appendStorageSlots(
+        Abi::FirstStorageImageBinding, storageAbsent, "the global storage image heap is full", [](std::size_t) { return true; },
+        [&](StorageTexture& image, std::size_t index) { return image.StorageView(storageMips[index], storageFirstLayer[index]); });
+    const auto samplerSlotOf = [&](std::size_t index) { return takenSlot(heap.SamplerSlot(samplers[index]), "the global sampler heap is full"); };
+    const auto firstSampler = std::find_if(table->tableSamplers.begin(), table->tableSamplers.end(), [&](const auto index) { return index != noElement; });
+    const std::uint32_t fallbackSampler = firstSampler != table->tableSamplers.end() ? samplerSlotOf(*firstSampler) : 0u;
+    for (const auto index : table->tableSamplers) map.push_back(index == noElement ? fallbackSampler : samplerSlotOf(index));
     const auto atomicElement = [&](std::size_t element, bool wide) {
         if (images == nullptr) return false;
         const auto& flags = wide ? images->imageAtomic64 : images->imageAtomic;
@@ -6474,20 +6458,13 @@ void ShaderResources::writeHeapTableMap(const CompiledShader& shader, std::size_
         map.resize(extraBase, fallbackSampler);
         for (const bool wide : {false, true}) {
             const auto kind = wide ? Abi::FirstAtomic64ImageBinding : Abi::FirstAtomicImageBinding;
-            const auto absent = heap.AbsentSlot(kind, heapPlaceholderView(kind));
-            for (std::size_t element = 0; element < elements; ++element) {
-                const auto index = element < table->elementStorage.size() ? table->elementStorage[element] : noElement;
-                if (!atomicElement(element, wide) || index == noElement || storageTextures[index] == nullptr) {
-                    map.push_back(absent);
-                    continue;
-                }
-                auto& image = *storageTextures[index];
-                const auto view = wide ? image.Atomic64View(storageMips[index], storageFirstLayer[index])
-                                       : image.AtomicView(storageMips[index], storageFirstLayer[index]);
-                const auto slot = heap.StorageSlot(kind, storageTextures[index], view);
-                Require(slot.has_value(), "the global atomic image heap is full");
-                map.push_back(*slot);
-            }
+            appendStorageSlots(
+                kind, heap.AbsentSlot(kind, heapPlaceholderView(kind)), "the global atomic image heap is full",
+                [&](std::size_t element) { return atomicElement(element, wide); },
+                [&](StorageTexture& image, std::size_t index) {
+                    return wide ? image.Atomic64View(storageMips[index], storageFirstLayer[index])
+                                : image.AtomicView(storageMips[index], storageFirstLayer[index]);
+                });
         }
     }
     const bool storageTable = std::ranges::any_of(shader.program->bindings, [](const ShaderRecompiler::DescriptorBinding& binding) {
@@ -6495,18 +6472,10 @@ void ShaderResources::writeHeapTableMap(const CompiledShader& shader, std::size_
     });
     if (storageTable) {
         map.resize(extraBase + 2u * elements, fallbackSampler);
-        const auto kind = Abi::FirstStorageImageBinding + 7u;
-        const auto absent = heap.AbsentSlot(kind, heapPlaceholderView(kind));
-        for (std::size_t element = 0; element < elements; ++element) {
-            const auto index = element < table->elementStorage.size() ? table->elementStorage[element] : noElement;
-            if (index == noElement || storageTextures[index] == nullptr) {
-                map.push_back(absent);
-                continue;
-            }
-            const auto slot = heap.StorageSlot(kind, storageTextures[index], storageTextures[index]->UintStorageViewOrDefault(storageMips[index], storageFirstLayer[index]));
-            Require(slot.has_value(), "the global storage image heap is full");
-            map.push_back(*slot);
-        }
+        const auto kind = Abi::FirstUintStorageImageBinding;
+        appendStorageSlots(
+            kind, heap.AbsentSlot(kind, heapPlaceholderView(kind)), "the global storage image heap is full", [](std::size_t) { return true; },
+            [&](StorageTexture& image, std::size_t index) { return image.UintStorageViewOrDefault(storageMips[index], storageFirstLayer[index]); });
     }
     if (map.size() == base) map.push_back(sampledAbsent);
     heapTableMaps[stageIndex] = heapSpan(heapStages[stageIndex].map, map);
@@ -6535,7 +6504,11 @@ VkImageView ShaderResources::heapSampledView(std::size_t index) const {
 }
 
 VkImageView ShaderResources::heapMultisampleStorageView(std::size_t index) const {
-    return index < multisampleStorageViews.size() ? multisampleStorageViews[index] : VK_NULL_HANDLE;
+    return index < multisampleStorage.size() ? multisampleStorage[index].view : VK_NULL_HANDLE;
+}
+
+const HeapSlotOwner* ShaderResources::heapMultisampleStorageOwner(std::size_t index) const {
+    return index < multisampleStorage.size() ? multisampleStorage[index].owner : nullptr;
 }
 
 VkImageView ShaderResources::heapStorageView(std::size_t index, std::uint32_t binding) const {
@@ -6563,7 +6536,7 @@ void ShaderResources::appendHeapSlotKey(VkShaderStageFlags stageBit, std::vector
         } else if (binding.layout.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
             for (const auto index : binding.imageAllocations) {
                 if (index != absent && storageTextures[index] == nullptr && heapMultisampleStorageView(index) != VK_NULL_HANDLE) {
-                    key.insert(key.end(), {0u, reinterpret_cast<std::uintptr_t>(heapMultisampleStorageView(index)),
+                    key.insert(key.end(), {reinterpret_cast<std::uintptr_t>(heapMultisampleStorageOwner(index)), reinterpret_cast<std::uintptr_t>(heapMultisampleStorageView(index)),
                                            static_cast<std::uintptr_t>(VK_IMAGE_LAYOUT_GENERAL)});
                     continue;
                 }
@@ -6579,21 +6552,6 @@ void ShaderResources::appendHeapSlotKey(VkShaderStageFlags stageBit, std::vector
             for (const auto index : binding.imageAllocations) key.push_back(reinterpret_cast<std::uintptr_t>(samplers[index].get()));
         }
     }
-}
-
-bool ShaderResources::heapSlotsCurrent(const BindlessHeap& heap, const HeapStageState& state) {
-    std::size_t generation = 0;
-    for (std::uint32_t kind = 0; kind < state.slots.size(); ++kind) {
-        for (const auto slot : state.slots[kind]) {
-            if (generation >= state.slotGenerations.size() || heap.SlotGeneration(slot) != state.slotGenerations[generation++])
-                return false;
-        }
-    }
-    for (std::size_t i = 0; i < state.samplerSlots.size(); ++i) {
-        if (i >= state.samplerGenerations.size() || heap.SamplerGeneration(state.samplerSlots[i]) != state.samplerGenerations[i])
-            return false;
-    }
-    return true;
 }
 
 void ShaderResources::takeHeapSlots(BindlessHeap& heap, HeapStageState& state, VkShaderStageFlags stageBit,
@@ -6617,9 +6575,7 @@ void ShaderResources::takeHeapSlots(BindlessHeap& heap, HeapStageState& state, V
                 }
                 const auto view = reinterpret_cast<VkImageView>(key[cursor + 1]);
                 cursor += 3;
-                const auto slot = heap.TextureSlot(kind, textures[index], view, textures[index]->Layout());
-                Require(slot.has_value(), "the global image heap is full");
-                kindSlots.push_back(*slot);
+                kindSlots.push_back(takenSlot(heap.TextureSlot(kind, textures[index].get(), view, textures[index]->Layout()), "the global image heap is full"));
             }
         } else if (binding.layout.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
             auto& kindSlots = state.slots[kind];
@@ -6627,9 +6583,7 @@ void ShaderResources::takeHeapSlots(BindlessHeap& heap, HeapStageState& state, V
                 if (index != absent && storageTextures[index] == nullptr && heapMultisampleStorageView(index) != VK_NULL_HANDLE) {
                     const auto view = reinterpret_cast<VkImageView>(key[cursor + 1]);
                     cursor += 3;
-                    const auto slot = heap.ViewSlot(kind, reinterpret_cast<const void*>(view), view);
-                    Require(slot.has_value(), "the global storage image heap is full");
-                    kindSlots.push_back(*slot);
+                    kindSlots.push_back(takenSlot(heap.ViewSlot(kind, heapMultisampleStorageOwner(index), view), "the global storage image heap is full"));
                     continue;
                 }
                 if (index == absent || storageTextures[index] == nullptr) {
@@ -6639,16 +6593,12 @@ void ShaderResources::takeHeapSlots(BindlessHeap& heap, HeapStageState& state, V
                 }
                 const auto view = reinterpret_cast<VkImageView>(key[cursor + 1]);
                 cursor += 3;
-                const auto slot = heap.StorageSlot(kind, storageTextures[index], view);
-                Require(slot.has_value(), "the global storage image heap is full");
-                kindSlots.push_back(*slot);
+                kindSlots.push_back(takenSlot(heap.StorageSlot(kind, storageTextures[index].get(), view), "the global storage image heap is full"));
             }
         } else if (binding.layout.descriptorType == VK_DESCRIPTOR_TYPE_SAMPLER) {
             for (const auto index : binding.imageAllocations) {
                 ++cursor;
-                const auto slot = heap.SamplerSlot(samplers[index]);
-                Require(slot.has_value(), "the global sampler heap is full");
-                state.samplerSlots.push_back(*slot);
+                state.samplerSlots.push_back(takenSlot(heap.SamplerSlot(samplers[index]), "the global sampler heap is full"));
             }
         }
     }
@@ -6685,7 +6635,7 @@ void ShaderResources::verifyHeapSlots(const BindlessHeap& heap, const HeapStageS
                 const auto view = heapMultisampleStorageView(index);
                 if (view == VK_NULL_HANDLE) continue;
                 ++storageChecked;
-                if (!bound || !heap.SlotHoldsStorage(kind, state.slots[kind][element], reinterpret_cast<const void*>(view), view)) ++storageWrong;
+                if (!bound || !heap.SlotHoldsStorage(kind, state.slots[kind][element], heapMultisampleStorageOwner(index), view)) ++storageWrong;
                 continue;
             }
             ++storageChecked;
@@ -6768,10 +6718,9 @@ void ShaderResources::writeHeapStage(const CompiledShader& shader) {
     bool current = key == stageState.key;
     const auto slotSerial = heap.SlotSerial();
     const bool unmoved = current && EpochProofs() && stageState.slotSerial == slotSerial;
-    if (!unmoved && current && CommitTrims())
+    if (!unmoved && current)
         current =
             heap.GenerationsCurrent(stageState.slots, stageState.slotGenerations, stageState.samplerSlots, stageState.samplerGenerations);
-    else if (!unmoved && current) current = heapSlotsCurrent(heap, stageState);
     if (!current) {
         stageState.key = key;
         takeHeapSlots(heap, stageState, stageBit, key);

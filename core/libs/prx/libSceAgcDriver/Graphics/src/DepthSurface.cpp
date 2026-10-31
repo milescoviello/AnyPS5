@@ -722,14 +722,9 @@ public:
         return std::any_of(textures.begin(), textures.end(), held) || std::any_of(stencilCopy.textures.begin(), stencilCopy.textures.end(), held);
     }
 
-    bool SampledOutsideHeap() const {
-        const auto outside = [](const auto& entry) { return entry.second != nullptr && entry.second.use_count() > 1 + static_cast<long>(entry.second->HeapHolds()); };
-        return std::any_of(textures.begin(), textures.end(), outside) || std::any_of(stencilCopy.textures.begin(), stencilCopy.textures.end(), outside);
-    }
-
-    bool SampledByHeap() const {
-        const auto heap = [](const auto& entry) { return entry.second != nullptr && entry.second->HeapHolds() != 0u; };
-        return std::any_of(textures.begin(), textures.end(), heap) || std::any_of(stencilCopy.textures.begin(), stencilCopy.textures.end(), heap);
+    bool SampledElsewhere() const {
+        const auto held = [](const auto& entry) { return entry.second.use_count() > 1; };
+        return std::any_of(textures.begin(), textures.end(), held) || std::any_of(stencilCopy.textures.begin(), stencilCopy.textures.end(), held);
     }
 
     void NoteHostWrite() {
@@ -1638,7 +1633,6 @@ private:
     }
 
     void release() noexcept {
-        if (SampledByHeap()) BindlessHeap::NoteSweepDue();
         depthPlane = {};
         stencilPlane = {};
         releaseStencilCopy();
@@ -2110,7 +2104,7 @@ void releaseRetired(const Context& context) {
     auto& list = surfaces();
     for (auto it = list.begin(); it != list.end();) {
         const auto& surface = **it;
-        if (!surface.retired || surface.context.device != context.device || surface.target.samples != 1u || surface.SampledOutsideHeap()) {
+        if (!surface.retired || surface.context.device != context.device || surface.target.samples != 1u || surface.SampledElsewhere()) {
             ++it;
             continue;
         }

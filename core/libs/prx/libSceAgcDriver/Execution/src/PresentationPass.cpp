@@ -140,9 +140,7 @@ void PresentationPass::Release(std::size_t index) noexcept {
         if (view) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, view, nullptr);
     }
     slot.transient.clear();
-    if (slot.source && heap) {
-        if (auto* bindless = Graphics::BindlessHeap::Existing(context)) bindless->ReleaseViewSlots(&slot);
-    }
+    if (slot.source && heap) slot.ReleaseHeapSlots(context);
     if (slot.source) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, slot.source, nullptr);
     slot.source = VK_NULL_HANDLE;
 }

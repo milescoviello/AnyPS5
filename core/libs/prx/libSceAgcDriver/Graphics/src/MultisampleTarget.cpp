@@ -172,7 +172,7 @@ struct TargetUse {
     std::atomic<bool> claimed{false};
 };
 
-class MultisampleTarget : public std::enable_shared_from_this<MultisampleTarget> {
+class MultisampleTarget : public std::enable_shared_from_this<MultisampleTarget>, public HeapSlotOwner {
 public:
     MultisampleTarget(const Context& context, const ColorTarget& target) : context(context), target(target), cmask(target.cmaskAddress, target.cmaskBytes), colorFill(target) {
         this->context.bufferPool.reset();
@@ -820,10 +820,7 @@ private:
         for (const auto& [format, resolvePass] : resolvePasses) context.Function<PFN_vkDestroyRenderPass>("vkDestroyRenderPass")(context.device, resolvePass, nullptr);
         if (orderView) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, orderView, nullptr);
         if (twinView) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, twinView, nullptr);
-        if (auto* heap = BindlessHeap::Existing(context)) {
-            if (storageView) heap->ReleaseViewSlots(reinterpret_cast<const void*>(storageView));
-            if (uintStorageView) heap->ReleaseViewSlots(reinterpret_cast<const void*>(uintStorageView));
-        }
+        ReleaseHeapSlots(context);
         if (storageView) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, storageView, nullptr);
         if (uintStorageView) context.Function<PFN_vkDestroyImageView>("vkDestroyImageView")(context.device, uintStorageView, nullptr);
         destroy({image, memory, view});
@@ -1453,7 +1450,7 @@ void MaterializeMultisampleTargetClear(const Context& context, const ColorTarget
     acquire(context, target);
 }
 
-VkImageView MultisampleTargetStorageView(const Context& context, const GuestTextureResource& resource, bool uintStorage) {
+MultisampleStorage MultisampleTargetStorageView(const Context& context, const GuestTextureResource& resource, bool uintStorage) {
     TargetsLock lock;
     discardRetiredTargets();
     const auto format = ResolveTextureFormat(resource.format);
@@ -1464,13 +1461,14 @@ VkImageView MultisampleTargetStorageView(const Context& context, const GuestText
         const auto& rendered = target->target;
         if (sameStorageForm(context, rendered.format, format) && rendered.extent.width == resource.width && rendered.extent.height == resource.height && rendered.samples == resource.samples && rendered.mip == 0) {
             if (!holdHostOnly(*target)) continue;
-            return target->Storage(StorageFormatForGuest(context, resource.format), uintStorage);
+            return {target->Storage(StorageFormatForGuest(context, resource.format), uintStorage), target.get()};
         }
         other = target.get();
     }
     if (other == nullptr) {
         Require(Recorder::Active() != nullptr, "a multisampled color target is only written by recorded dispatches");
-        return createFilled(context, resource, format, "writing", true).Storage(StorageFormatForGuest(context, resource.format), uintStorage);
+        auto& created = createFilled(context, resource, format, "writing", true);
+        return {created.Storage(StorageFormatForGuest(context, resource.format), uintStorage), &created};
     }
     char text[320];
     std::snprintf(text, sizeof(text), "AGC graphics: storage image access to multisampled color target 0x%llx (%ux%u, %u samples, vk format %d) as a %ux%u texture of %u samples and guest format %u (vk %d) is not implemented", static_cast<unsigned long long>(resource.baseAddress), other->target.extent.width, other->target.extent.height, other->target.samples, static_cast<int>(other->target.format), resource.width, resource.height, resource.samples, resource.format, static_cast<int>(format));
