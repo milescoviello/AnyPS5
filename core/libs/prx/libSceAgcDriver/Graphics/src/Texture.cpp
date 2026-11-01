@@ -4315,32 +4315,38 @@ void waitForIdlePublish(const char* reason) {
 
 }
 
-static void traceFlushSync(const Recorder& recorder, std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> ownNotes, const char* reason) {
+static std::array<std::array<double, 5>, 16> flushSyncWaitMs{};
+static std::map<std::string, std::size_t> flushSyncReasonIndex;
+static std::mutex flushSyncMutex;
+
+static int traceFlushSync(const Recorder& recorder, std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> ownNotes, const char* reason) {
     static const bool enabled = std::getenv("APS5_TRACE_FLUSH_SYNC_KINDS") != nullptr;
-    if (!enabled) return;
-    static std::mutex mutex;
+    if (!enabled) return -1;
     static std::map<std::string, std::array<std::uint64_t, 6>> byReason;
     static std::map<std::uintptr_t, std::uint64_t> sites;
     static std::uint64_t total = 0;
     const auto kinds = recorder.PendingOverlapKinds(address, bytes, ownNotes);
-    std::lock_guard lock(mutex);
-    auto& row = byReason[reason != nullptr ? reason : "(none)"];
+    std::lock_guard lock(flushSyncMutex);
+    const std::string name = reason != nullptr ? reason : "(none)";
+    auto& row = byReason[name];
     ++row[0];
-    if (kinds.unstamped != 0) ++row[1];
-    else if (kinds.stamped != 0) ++row[2];
-    else if (kinds.own != 0) ++row[3];
-    else ++row[4];
+    const int category = kinds.unstamped != 0 ? 0 : kinds.stamped != 0 ? 1 : kinds.own != 0 ? 2 : 3;
+    ++row[static_cast<std::size_t>(category) + 1];
+    const auto slot = flushSyncReasonIndex.emplace(name, flushSyncReasonIndex.size()).first->second;
+    const int encoded = slot < 16 ? static_cast<int>(slot * 8) + category : -1;
     if (kinds.open) ++row[5];
     if (kinds.site != nullptr) {
         Dl_info info{};
         const auto offset = dladdr(kinds.site, &info) != 0 && info.dli_fbase != nullptr ? reinterpret_cast<std::uintptr_t>(kinds.site) - reinterpret_cast<std::uintptr_t>(info.dli_fbase) : reinterpret_cast<std::uintptr_t>(kinds.site);
         ++sites[offset];
     }
-    if (++total % 2000 != 0) return;
+    if (++total % 2000 != 0) return encoded;
     std::string text;
     for (const auto& [name, counts] : byReason) {
         char part[256];
-        std::snprintf(part, sizeof(part), " %s: %llu (unstamped %llu, other stamped only %llu, own only %llu, read only %llu; open %llu)", name.c_str(), static_cast<unsigned long long>(counts[0]), static_cast<unsigned long long>(counts[1]), static_cast<unsigned long long>(counts[2]), static_cast<unsigned long long>(counts[3]), static_cast<unsigned long long>(counts[4]), static_cast<unsigned long long>(counts[5]));
+        const auto index = flushSyncReasonIndex[name];
+        const auto& waits = flushSyncWaitMs[index < 16 ? index : 15];
+        std::snprintf(part, sizeof(part), " %s: %llu (unstamped %llu/%.0fms, other stamped only %llu/%.0fms, own only %llu/%.0fms, read only %llu/%.0fms; open %llu)", name.c_str(), static_cast<unsigned long long>(counts[0]), static_cast<unsigned long long>(counts[1]), waits[0], static_cast<unsigned long long>(counts[2]), waits[1], static_cast<unsigned long long>(counts[3]), waits[2], static_cast<unsigned long long>(counts[4]), waits[3], static_cast<unsigned long long>(counts[5]));
         text += part;
     }
     std::vector<std::pair<std::uint64_t, std::uintptr_t>> top;
@@ -4352,7 +4358,14 @@ static void traceFlushSync(const Recorder& recorder, std::uint64_t address, std:
         std::snprintf(part, sizeof(part), " +0x%llx x%llu", static_cast<unsigned long long>(top[index].second), static_cast<unsigned long long>(top[index].first));
         text += part;
     }
-    std::fprintf(stderr, "[flush-sync] %llu flush syncs by reason:%s\n", static_cast<unsigned long long>(total), text.c_str());
+    std::fprintf(stderr, "[flush-sync] %llu flush syncs by reason (count/wait):%s\n", static_cast<unsigned long long>(total), text.c_str());
+    return encoded;
+}
+
+static void addFlushSyncWait(int encoded, std::chrono::steady_clock::time_point started) {
+    if (encoded < 0) return;
+    std::lock_guard lock(flushSyncMutex);
+    flushSyncWaitMs[static_cast<std::size_t>(encoded / 8)][static_cast<std::size_t>(encoded % 8)] += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
 }
 
 bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except, const char* reason, PublishScope scope, bool* published, bool waited) {
@@ -4449,7 +4462,13 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
     std::lock_guard gpu(GuestMemory::GpuMutex());
     if (!ownNotes.empty() && (flush.size() != 1 || std::any_of(flush.begin(), flush.end(), [](const std::shared_ptr<StorageTexture>& texture) { return ExistingHostImportFor(texture->context, texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes)) == nullptr; }))) ownNotes.clear();
     if (auto* recorder = Recorder::Active(); recorder != nullptr && !Recorder::InCompletion() && recorder->PendingWriterSerial(address, bytes, ownNotes) != 0) {
-        traceFlushSync(*recorder, address, bytes, ownNotes, reason);
+        const int syncKind = traceFlushSync(*recorder, address, bytes, ownNotes, reason);
+        const auto syncStarted = std::chrono::steady_clock::now();
+        struct SyncTimer {
+            int kind;
+            std::chrono::steady_clock::time_point started;
+            ~SyncTimer() { addFlushSyncWait(kind, started); }
+        } syncTimer{syncKind, syncStarted};
         try {
             recorder->Reap();
             if (const auto writer = recorder->PendingWriterSerial(address, bytes, ownNotes); writer == recorder->OpenSerial()) {
