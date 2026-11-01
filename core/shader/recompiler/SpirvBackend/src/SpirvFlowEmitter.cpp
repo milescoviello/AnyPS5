@@ -876,8 +876,8 @@ void EmitControlFlow(SpirvValueEmitContext& context, StructuredFunctionState& fu
         state.continueTarget = IsContinueTarget(program, info->id);
         state.bdaStopsInvocations = stops && !state.continueTarget;
         EmitStructuredBlock(context, functionState, block);
-        functionState.blockExitLabels.emplace(block, state.currentLabel);
         EmitStructuredTerminator(context, program, *info);
+        functionState.blockExitLabels.emplace(block, state.currentLabel);
         state.bdaStopsInvocations = stops;
         state.continueTarget = false;
     }
