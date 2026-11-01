@@ -110,6 +110,8 @@ struct SpirvEmitterState {
     std::uint32_t spannedWaveCount = 1;
     std::uint32_t spannedExchangeVariable = 0;
     std::uint32_t spannedPairVariable = 0;
+    std::uint32_t spannedBankVariable = 0;
+    std::uint32_t spannedParityVariable = 0;
     bool waveLdsPair = false;
     bool narrowSubgroupClock = false;
     bool float64DenormPreserve = false;

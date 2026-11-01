@@ -72,7 +72,44 @@ namespace ShaderRecompiler
             return value;
         }
 
+        std::uint32_t SpannedBankSlot(SpirvEmitterState& state, std::uint32_t index) {
+            if (state.spannedBankVariable == 0u) {
+                state.spannedBankVariable = state.module.DefineGlobalVariable(TypeU32ArrayPointer(state, spv::StorageClassWorkgroup, 4u * state.spannedWaveCount), spv::StorageClassWorkgroup);
+                state.module.AddName(state.spannedBankVariable, "wave_ballot_banks");
+            }
+            const auto slot = EmitAddU32(state, EmitBinaryU32(state, spv::OpShiftLeftLogical, SpannedWaveIndex(state), ConstantU32(state, 2u)), index);
+            const auto pointer = state.module.AllocateId();
+            state.module.AddFunction(spv::OpAccessChain, TypeU32ElementPointer(state, spv::StorageClassWorkgroup), pointer, state.spannedBankVariable, slot);
+            return pointer;
+        }
+
+        void SpannedBankBallot(SpirvEmitterState& state, std::uint32_t result, std::uint32_t predicate) {
+            const auto own = state.module.AllocateId();
+            EmitHostSubgroupBallot(state, own, predicate);
+            const auto word = state.module.AllocateId();
+            state.module.AddFunction(spv::OpCompositeExtract, TypeU32(state), word, own, 0u);
+            const auto parity = state.module.AllocateId();
+            state.module.AddFunction(spv::OpLoad, TypeU32(state), parity, state.spannedParityVariable);
+            state.module.AddFunction(spv::OpStore, state.spannedParityVariable, EmitBinaryU32(state, spv::OpBitwiseXor, parity, ConstantU32(state, 1u)));
+            const auto bank = EmitBinaryU32(state, spv::OpShiftLeftLogical, parity, ConstantU32(state, 1u));
+            const auto half = EmitBinaryU32(state, spv::OpBitwiseAnd, EmitBinaryU32(state, spv::OpShiftRightLogical, EmitLocalInvocationIndex(state), ConstantU32(state, 5u)), ConstantU32(state, 1u));
+            const auto workgroup = ConstantU32(state, spv::ScopeWorkgroup);
+            const auto relaxed = ConstantU32(state, spv::MemorySemanticsMaskNone);
+            state.module.AddFunction(spv::OpAtomicStore, SpannedBankSlot(state, EmitAddU32(state, bank, half)), workgroup, relaxed, word);
+            EmitSpannedPairBarrier(state);
+            const auto low = state.module.AllocateId();
+            const auto high = state.module.AllocateId();
+            state.module.AddFunction(spv::OpAtomicLoad, TypeU32(state), low, SpannedBankSlot(state, bank), workgroup, relaxed);
+            state.module.AddFunction(spv::OpAtomicLoad, TypeU32(state), high, SpannedBankSlot(state, EmitAddU32(state, bank, ConstantU32(state, 1u))), workgroup, relaxed);
+            state.module.AddFunction(spv::OpCompositeConstruct, TypeU32Vector(state, 4u), result, low, high, ConstantU32(state, 0u), ConstantU32(state, 0u));
+        }
+
         void SpannedBallot(SpirvEmitterState& state, std::uint32_t result, std::uint32_t predicate) {
+            static const bool threeBarriers = std::getenv("APS5_SPANNED_BALLOT3") != nullptr;
+            if (state.spannedMultiWave && state.spannedParityVariable != 0u && !threeBarriers && std::getenv("APS5_SPANNED_WG_BARRIER") == nullptr) {
+                SpannedBankBallot(state, result, predicate);
+                return;
+            }
             const auto lane = SpannedLane(state);
             SpannedBarrier(state);
             state.module.AddFunction(spv::OpAtomicStore, SpannedSlot(state, EmitBinaryU32(state, spv::OpBitwiseAnd, lane, ConstantU32(state, 1u))), ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::MemorySemanticsMaskNone), ConstantU32(state, 0u));

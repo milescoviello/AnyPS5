@@ -1755,6 +1755,10 @@ void EmitProgram(SpirvEmitterState& state) {
         high.otherHalf = &ctx;
         high.half = 1u;
     }
+    if (state.spannedMultiWave) {
+        state.spannedParityVariable = state.module.AllocateId();
+        state.module.AddName(state.spannedParityVariable, "spanned_ballot_bank");
+    }
     if (state.program.Resources().stage == IrShaderStage::Pixel && state.requirements.pixelValidMask) {
         state.pixelValidMaskVariable = state.module.AllocateId();
         state.module.AddName(state.pixelValidMaskVariable, "pixel_valid_mask_active");
@@ -1815,6 +1819,9 @@ void EmitProgram(SpirvEmitterState& state) {
     }
     if (state.pixelValidMaskVariable != 0u) {
         state.module.AddFunction(spv::OpVariable, TypePointer(state, spv::StorageClassFunction, TypeU32(state)), state.pixelValidMaskVariable, spv::StorageClassFunction);
+    }
+    if (state.spannedParityVariable != 0u) {
+        state.module.AddFunction(spv::OpVariable, TypePointer(state, spv::StorageClassFunction, TypeU32(state)), state.spannedParityVariable, spv::StorageClassFunction, ConstantU32(state, 0u));
     }
     for (std::size_t entry = 0; entry < state.mergePendingVariables.size(); ++entry) {
         const auto value = PixelInfo(state).merges[entry].blend.enabled ? TypeF32Vector(state, 4u) : TypeU32(state);
