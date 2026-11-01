@@ -283,7 +283,7 @@ void FillDeviceFunctions(const Context& context, DeviceFunctions& functions) {
     functions.allocateDescriptorSets = context.Function<PFN_vkAllocateDescriptorSets>("vkAllocateDescriptorSets");
     functions.getFenceStatus = context.Function<PFN_vkGetFenceStatus>("vkGetFenceStatus");
     functions.createBuffer = context.Function<PFN_vkCreateBuffer>("vkCreateBuffer");
-    functions.destroyBuffer = context.Function<PFN_vkDestroyBuffer>("vkDestroyBuffer");
+    functions.destroyBuffer = context.Function<PFN_vkDestroyBuffer>("vkDestroyBufferView");
     functions.getBufferMemoryRequirements = context.Function<PFN_vkGetBufferMemoryRequirements>("vkGetBufferMemoryRequirements");
     functions.bindBufferMemory = context.Function<PFN_vkBindBufferMemory>("vkBindBufferMemory");
     functions.allocateMemory = context.Function<PFN_vkAllocateMemory>("vkAllocateMemory");
