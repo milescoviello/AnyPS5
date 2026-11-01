@@ -277,7 +277,7 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
     const bool recordedWrites = [&] {
         std::lock_guard gpu(GuestMemory::GpuMutex());
         const auto* recorder = Graphics::Recorder::Active();
-        return recorder != nullptr && recorder->PendingWriterSerial(address, bytes) != 0;
+        return recorder != nullptr && recorder->PendingWriteOverlaps(address, bytes);
     }();
     if (!pipelineWrites && !finisherWrites && !recordedWrites) return false;
     if (pipelineWrites) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x3f);
