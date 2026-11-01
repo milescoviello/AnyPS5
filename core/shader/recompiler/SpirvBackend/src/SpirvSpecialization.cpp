@@ -487,6 +487,20 @@ public:
     void Reset(std::size_t bound) {
         items.assign(bound, T{});
         present.assign(bound, 0u);
+        touched.clear();
+        count = 0;
+    }
+    void Clear(std::size_t bound) {
+        if (items.size() != bound) {
+            Reset(bound);
+            return;
+        }
+        for (const auto id : touched) {
+            if constexpr (requires(T& item) { item.clear(); }) items[id].clear();
+            else items[id] = T{};
+            present[id] = 0u;
+        }
+        touched.clear();
         count = 0;
     }
     bool contains(std::uint32_t id) const { return id < present.size() && present[id] != 0u; }
@@ -504,14 +518,17 @@ public:
         if (present[id] != 0u) return false;
         items[id] = std::move(value);
         present[id] = 1u;
+        touched.push_back(id);
         ++count;
         return true;
     }
     T& operator[](std::uint32_t id) {
         check(id);
         if (present[id] == 0u) {
-            items[id] = T{};
+            if constexpr (requires(T& item) { item.clear(); }) items[id].clear();
+            else items[id] = T{};
             present[id] = 1u;
+            touched.push_back(id);
             ++count;
         }
         return items[id];
@@ -551,22 +568,36 @@ private:
     }
     std::vector<T> items;
     std::vector<std::uint8_t> present;
+    std::vector<std::uint32_t> touched;
     std::size_t count = 0;
 };
 
 class IdSet {
 public:
-    void Reset(std::size_t bound) { present.assign(bound, 0u); }
+    void Reset(std::size_t bound) {
+        present.assign(bound, 0u);
+        touched.clear();
+    }
+    void Clear(std::size_t bound) {
+        if (present.size() != bound) {
+            Reset(bound);
+            return;
+        }
+        for (const auto id : touched) present[id] = 0u;
+        touched.clear();
+    }
     bool contains(std::uint32_t id) const { return id < present.size() && present[id] != 0u; }
     bool insert(std::uint32_t id) {
         if (id >= present.size()) throw std::runtime_error("prepared SPIR-V id exceeds the module bound");
         if (present[id] != 0u) return false;
         present[id] = 1u;
+        touched.push_back(id);
         return true;
     }
 
 private:
     std::vector<std::uint8_t> present;
+    std::vector<std::uint32_t> touched;
 };
 
 class Specialization {
@@ -720,14 +751,14 @@ private:
     bool fold() {
         bool changed = false;
         bool function = false;
-        IdTable<std::pair<std::uint32_t, std::uint32_t>> extracts;
-        extracts.Reset(bound);
-        IdTable<std::uint32_t> bitcasts;
-        bitcasts.Reset(bound);
+        auto& extracts = foldExtracts;
+        extracts.Clear(bound);
+        auto& bitcasts = foldBitcasts;
+        bitcasts.Clear(bound);
         std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t> blockBitcasts;
         std::map<std::array<std::uint32_t, 3>, std::uint32_t> blockNanTests;
-        IdTable<std::pair<std::uint32_t, std::uint32_t>> constPointers;
-        constPointers.Reset(bound);
+        auto& constPointers = foldConstPointers;
+        constPointers.Clear(bound);
         for (auto& instruction : instructions) {
             if (instruction.empty()) continue;
             auto op = Opcode(instruction);
@@ -839,8 +870,8 @@ private:
     }
 
     bool prune() {
-        IdTable<std::vector<std::size_t>> blocks;
-        blocks.Reset(bound);
+        auto& blocks = pruneBlocks;
+        blocks.Clear(bound);
         std::vector<std::uint32_t> entries;
         std::uint32_t block = 0;
         bool entry = false;
@@ -875,8 +906,8 @@ private:
             }
             return true;
         };
-        IdSet loopHeaders;
-        loopHeaders.Reset(bound);
+        auto& loopHeaders = pruneLoopHeaders;
+        loopHeaders.Clear(bound);
         std::map<std::uint32_t, std::uint32_t> continueHeaders;
         for (const auto& [label, indices] : blocks) {
             for (const auto index : indices) {
@@ -885,8 +916,8 @@ private:
                 continueHeaders.emplace(instructions[index].at(2), label);
             }
         }
-        IdTable<std::vector<std::uint32_t>> edges;
-        edges.Reset(bound);
+        auto& edges = pruneEdges;
+        edges.Clear(bound);
         for (const auto& [label, indices] : blocks) {
             auto& terminal = instructions[indices.back()];
             auto op = Opcode(terminal);
@@ -928,8 +959,8 @@ private:
                 for (std::size_t index = 3; index + stride <= terminal.size(); index += stride) successors.push_back(terminal[index + stride - 1u]);
             }
         }
-        IdSet live;
-        live.Reset(bound);
+        auto& live = pruneLive;
+        live.Clear(bound);
         auto pending = entries;
         while (!pending.empty()) {
             const auto label = pending.back();
@@ -1168,6 +1199,13 @@ private:
     std::vector<Instruction> instructions;
     std::vector<Instruction> constants;
     std::uint32_t bound = 0;
+    IdTable<std::pair<std::uint32_t, std::uint32_t>> foldExtracts;
+    IdTable<std::uint32_t> foldBitcasts;
+    IdTable<std::pair<std::uint32_t, std::uint32_t>> foldConstPointers;
+    IdTable<std::vector<std::size_t>> pruneBlocks;
+    IdSet pruneLoopHeaders;
+    IdTable<std::vector<std::uint32_t>> pruneEdges;
+    IdSet pruneLive;
     IdTable<ScalarType> types;
     IdTable<std::uint32_t> values;
     IdTable<std::uint32_t> resultTypes;
