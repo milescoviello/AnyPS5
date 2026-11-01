@@ -2057,7 +2057,16 @@ void Recorder::AddGpuTiming(CommandClass which, double nanoseconds, std::uint64_
     timingClassMs += nanoseconds / 1e6;
 }
 
+static bool traceHungBatches() {
+    static const bool enabled = std::getenv("APS5_TRACE_HUNG_BATCH") != nullptr;
+    return enabled;
+}
+
 std::uint32_t Recorder::BeginGpuTiming(std::uint64_t key) {
+    if (traceHungBatches()) {
+        ensureOpen();
+        if (open->traceKeys.size() < 8192) open->traceKeys.push_back(key);
+    }
     if (!GpuTimingEnabled()) return NoTiming;
     Commands();
     return beginTiming(key);
@@ -2070,6 +2079,7 @@ std::string Recorder::TimingKeyLabel(std::uint64_t key) {
 }
 
 std::uint32_t Recorder::BeginInPassGpuTiming(std::uint64_t key) {
+    if (traceHungBatches() && open != nullptr && open->traceKeys.size() < 8192) open->traceKeys.push_back(key);
     if (!GpuTimingEnabled() || open == nullptr || open->queries == VK_NULL_HANDLE) return NoTiming;
     return beginTiming(key);
 }
@@ -3257,6 +3267,28 @@ Recorder::OverlapKinds Recorder::PendingOverlapKinds(std::uint64_t address, std:
     return kinds;
 }
 
+void Recorder::reportHungBatches(const Batch& waited, const char* what) const {
+    if (!traceHungBatches()) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto describe = [&](const Batch& batch, const char* role) {
+        std::map<std::uint64_t, std::uint32_t> counts;
+        for (const auto key : batch.traceKeys) ++counts[key];
+        std::vector<std::pair<std::uint32_t, std::uint64_t>> top;
+        for (const auto& [key, count] : counts) top.emplace_back(count, key);
+        std::sort(top.rbegin(), top.rend());
+        std::string text;
+        for (std::size_t index = 0; index < top.size() && index < 8; ++index) text += " " + TimingKeyLabel(top[index].second) + " x" + std::to_string(top[index].first);
+        const auto last = batch.traceKeys.empty() ? std::string("none") : TimingKeyLabel(batch.traceKeys.back());
+        const auto ageMs = batch.submitted ? std::chrono::duration<double, std::milli>(now - batch.submittedAt).count() : -1.0;
+        std::fprintf(stderr, "[hung-batch] %s: %s batch %llu queue 0x%x submitted %.0f ms ago, %zu keys, last %s, top:%s\n", what, role, static_cast<unsigned long long>(batch.serial), batch.queue, ageMs, batch.traceKeys.size(), last.c_str(), text.c_str());
+    };
+    describe(waited, "waited");
+    for (const auto& batch : inFlight) {
+        if (batch.get() == &waited || signaled(*batch)) continue;
+        describe(*batch, "unsignaled");
+    }
+}
+
 bool Recorder::signaled(const Batch& batch) const {
     return batch.submitted && fenceStatus(batch.fence) == VK_SUCCESS;
 }
@@ -4325,6 +4357,7 @@ void Recorder::finish(std::unique_ptr<Batch> batch, bool wait, int source, bool 
         for (int waited = 5; result == VK_TIMEOUT; waited += 5) {
             // A batch still running after 5 s is reported (every 5 s) so a GPU-side hang is visible.
             std::fprintf(stderr, "[gpu] recorded batch still running on the GPU after %d s\n", waited);
+            if (waited == 5) reportHungBatches(*batch, "5 s");
             result = waitFences(context.device, 1, &batch->fence, VK_TRUE, 5'000'000'000ull);
         }
         if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
@@ -4332,6 +4365,7 @@ void Recorder::finish(std::unique_ptr<Batch> batch, bool wait, int source, bool 
             Check(idle, "vkDeviceWaitIdle after recorder fence failure");
         }
         if (result != VK_SUCCESS) {
+            reportHungBatches(*batch, "device lost");
             release(*batch);
             Check(result, "vkWaitForFences recorder");
         }

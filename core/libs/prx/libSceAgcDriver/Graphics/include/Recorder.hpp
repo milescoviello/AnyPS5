@@ -619,6 +619,7 @@ private:
         bool segmentActive = false;
         std::uint32_t queuedDumps = 0;
         std::vector<std::uint64_t> timedKeys;
+        std::vector<std::uint64_t> traceKeys;
         std::vector<std::uint64_t> timedBytes;
         // The whole-batch timed range (BatchTimingKey) and its stamps once read (see Completed).
         std::uint32_t batchTiming = NoTiming;
@@ -866,6 +867,7 @@ private:
     std::vector<std::shared_ptr<void>> holdKept;
     std::uint64_t holdKeptSerial = 0;
     std::deque<std::unique_ptr<Batch>> inFlight;
+    void reportHungBatches(const Batch& waited, const char* what) const;
     // Batches popped from inFlight whose completions have not run yet: their writes stay in the
     // snapshot (a rebuild from inside a completion must not drop them) until finish returns.
     std::vector<const Batch*> finishing;
