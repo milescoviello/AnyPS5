@@ -416,7 +416,8 @@ void ValidateBdaTarget(const IrProgram& program, const SpirvTargetOptions& targe
 bool BdaInvocationsMayStop(const IrProgram& program) {
     for (const auto* block : program.BlockOrder()) {
         for (const auto* instruction : block->Instructions()) {
-            if (instruction->Opcode() == IrOpcode::Barrier) return false;
+            const auto opcode = instruction->Opcode();
+            if (opcode == IrOpcode::Barrier || opcode == IrOpcode::ReadLane || opcode == IrOpcode::WriteLane) return false;
         }
     }
     return true;
