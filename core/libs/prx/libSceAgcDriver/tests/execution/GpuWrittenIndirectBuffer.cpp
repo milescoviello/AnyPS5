@@ -38,11 +38,14 @@ namespace {
 using AgcDriver::Graphics::Require;
 
 constexpr std::array<std::uint32_t, 12> Code{0x7e000204u, 0x7e020205u, 0x7e040206u, 0x7e060207u, 0x7e080208u, 0x7e0a0280u, 0xe0781000u, 0x80000005u, 0xe0701010u, 0x80000405u, 0xbf8c3f70u, 0xbf810000u};
+constexpr std::array<std::uint32_t, 10> ReaderCode{0x7e000208u, 0x7e020209u, 0x7e08020au, 0x7e0a020bu, 0xdc308000u, 0x027d0000u, 0xbf8c3f70u, 0xdc708000u, 0x007d0204u, 0xbf810000u};
+constexpr std::size_t ReaderOffset = 2048;
 constexpr std::size_t CommandsOffset = 4096;
 constexpr std::size_t CommandWords = 64;
 constexpr std::size_t MarkerOffset = 8192;
 constexpr std::size_t LabelOffset = 8196;
 constexpr std::size_t GateOffset = 8200;
+constexpr std::size_t ScratchOffset = 8212;
 constexpr std::size_t ChildOffset = CommandsOffset + CommandWords * 4;
 constexpr std::size_t BlockBytes = 65536;
 constexpr std::uint32_t Filler = 0xffff1000u;
@@ -93,6 +96,24 @@ std::vector<std::uint32_t> Dispatching(const GuestBlock& block, const std::vecto
              Pm4(0x76, {0x207, 1}), Pm4(0x76, {0x208, 1}), Pm4(0x76, {0x209, 1}),
              Pm4(0x76, {0x213, 9u << 1u}),
              Pm4(0x76, {0x240, Low(commands), High(commands) & 0xffffu, CommandWords * 4u, 0x31016facu, writeData[0], writeData[1], writeData[2], writeData[3], writeData[4]}),
+             Pm4(0x15, {1, 1, 1, 0x41}),
+             Pm4(0x46, {0x407}),
+         }) {
+        words.insert(words.end(), packet.begin(), packet.end());
+    }
+    return words;
+}
+
+std::vector<std::uint32_t> AddressReading(const GuestBlock& block, std::uint64_t target) {
+    const auto kernel = block.At(ReaderOffset);
+    const auto scratch = block.At(ScratchOffset);
+    std::vector<std::uint32_t> words;
+    for (const auto& packet : {
+             Pm4(0x76, {0x20c, static_cast<std::uint32_t>(kernel >> 8u)}),
+             Pm4(0x76, {0x20d, static_cast<std::uint32_t>(kernel >> 40u) & 0xffu}),
+             Pm4(0x76, {0x207, 1}), Pm4(0x76, {0x208, 1}), Pm4(0x76, {0x209, 1}),
+             Pm4(0x76, {0x213, 12u << 1u}),
+             Pm4(0x76, {0x240, 0, 0, 0, 0, 0, 0, 0, 0, Low(target), High(target), Low(scratch), High(scratch)}),
              Pm4(0x15, {1, 1, 1, 0x41}),
              Pm4(0x46, {0x407}),
          }) {
@@ -234,6 +255,40 @@ void CpuRewriteAfterSubmit(const GuestBlock& block, bool conditional) {
     Require(Load(block, MarkerOffset) == 0, kind + " the CPU rewrote after its submission, with no GPU work before it writing the buffer, ran the rewritten commands instead of running as it was copied");
 }
 
+void CpuRewriteBesideAddressReader(const GuestBlock& block, bool open) {
+    std::array<std::uint32_t, CommandWords> fillers{};
+    fillers.fill(Filler);
+    std::memcpy(block.Bytes(CommandsOffset), fillers.data(), sizeof(fillers));
+    Store(block, MarkerOffset, 0);
+    Store(block, LabelOffset, 0);
+    Store(block, GateOffset, 0);
+    const auto commands = block.At(CommandsOffset);
+    const auto marker = block.At(MarkerOffset);
+    const auto label = block.At(LabelOffset);
+    const auto gate = block.At(GateOffset);
+    const auto wait = Pm4(0x3c, {0x13, Low(gate), High(gate), 1, 0xffffffffu, 0x19});
+    const auto reader = AddressReading(block, commands);
+    std::vector<std::uint32_t> words;
+    if (open) words.insert(words.end(), wait.begin(), wait.end());
+    words.insert(words.end(), reader.begin(), reader.end());
+    if (!open) words.insert(words.end(), wait.begin(), wait.end());
+    const auto run = Pm4(0x3f, {1, 0, 0, 0, 0, 0, 0, Low(commands), High(commands) & 0xffffu, CommandWords, 0, 0, 0});
+    words.insert(words.end(), run.begin(), run.end());
+    const auto after = Pm4(0x37, {0x500u, Low(label), High(label), 1});
+    words.insert(words.end(), after.begin(), after.end());
+    Packet dcb{words.data(), static_cast<std::uint32_t>(words.size()), 0, {}};
+    Require(sceAgcDriverSubmitDcb(&dcb) == 0, "GPU-written indirect buffer: the submission beside an address-based reader failed");
+    const auto store = Pm4(0x37, {0x500u, Low(marker), High(marker), 1});
+    std::memcpy(block.Bytes(CommandsOffset), store.data(), store.size() * sizeof(std::uint32_t));
+    Store(block, GateOffset, 1);
+    AgcDriverWaitIdle_nid_postfix();
+    AgcDriver::GuestMemory::FlushGpuWrites(label, sizeof(std::uint32_t));
+    AgcDriver::GuestMemory::FlushGpuWrites(marker, sizeof(std::uint32_t));
+    const std::string where = open ? "in the open batch" : "in an unfinished batch";
+    Require(Load(block, LabelOffset) == 1, "the packet after a COND_INDIRECT_BUFFER read address-based " + where + " did not run");
+    Require(Load(block, MarkerOffset) == 0, "a COND_INDIRECT_BUFFER the CPU rewrote after its submission ran the rewritten commands because a dispatch " + where + " read its range address-based; only GPU writes to the range may make it run anything but its copy");
+}
+
 void Run(const GuestBlock& block, std::uint32_t marker, bool conditional) {
     std::array<std::uint32_t, CommandWords> fillers{};
     fillers.fill(Filler);
@@ -366,6 +421,7 @@ int main() {
         }
         GuestBlock block;
         std::memcpy(block.Bytes(0), Code.data(), sizeof(Code));
+        std::memcpy(block.Bytes(ReaderOffset), ReaderCode.data(), sizeof(ReaderCode));
         Run(block, 0x5eed0001u, true);
         Run(block, 0x5eed0002u, false);
         HeldWaitAfterRewrite(block);
@@ -373,6 +429,8 @@ int main() {
         InvalidRewrite(block);
         CpuRewriteAfterSubmit(block, true);
         CpuRewriteAfterSubmit(block, false);
+        CpuRewriteBesideAddressReader(block, true);
+        CpuRewriteBesideAddressReader(block, false);
         RewrittenWaitBeforeOwnFlip(block);
         AgcDriverShutdown_nid_postfix();
         std::puts("GPU-written indirect buffer: indirect buffers run what the dispatch before them wrote");
