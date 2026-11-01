@@ -27,8 +27,9 @@ namespace AgcDriver::DriverDetail {
 namespace {
 
 void noteIndirectSegment(Submission& submission, std::size_t start, const std::uint32_t* target, std::size_t words) {
+    const auto generation = GuestMemory::CollectWrites(reinterpret_cast<std::uint64_t>(target), words * sizeof(std::uint32_t));
     if (submission.commands.size() - start != words || !std::equal(submission.commands.begin() + static_cast<std::ptrdiff_t>(start), submission.commands.end(), target)) return;
-    submission.indirectSegments.push_back({start, target, words});
+    submission.indirectSegments.push_back({start, target, words, {}, generation});
 }
 
 void collectLabelDwords(std::span<const std::uint32_t> packet, std::set<std::uint64_t>& dwords) {
@@ -272,6 +273,7 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
     const auto segment = submission.indirectSegments[index];
     const auto address = reinterpret_cast<std::uint64_t>(segment.target);
     const auto bytes = segment.words * sizeof(std::uint32_t);
+    if (segment.generation != 0 && !GuestMemory::UnchangedSinceCollected(address, bytes, segment.generation)) return false;
     if (DrawPipeline::Active() && DrawPipeline::Queue0().Overlaps(address, bytes)) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x3f);
     if (DrawFinisher::Busy() && DrawFinisher::Get().PendingOverlaps(address, address + bytes)) DrawFinisher::Get().Drain();
     std::vector<std::uint32_t> words(segment.words);
@@ -332,8 +334,8 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
     }
     submission.heldAtSubmit = std::move(held);
     std::vector<Submission::IndirectSegment> segments(submission.indirectSegments.begin(), submission.indirectSegments.begin() + static_cast<std::ptrdiff_t>(index));
-    for (const auto& nested : expanded.indirectSegments) segments.push_back({segment.start + nested.start, nested.target, nested.words, segment.waits});
-    for (auto later = submission.indirectSegments.begin() + static_cast<std::ptrdiff_t>(index) + 1; later != submission.indirectSegments.end(); ++later) segments.push_back({moved(later->start), later->target, later->words, later->waits});
+    for (const auto& nested : expanded.indirectSegments) segments.push_back({segment.start + nested.start, nested.target, nested.words, segment.waits, nested.generation});
+    for (auto later = submission.indirectSegments.begin() + static_cast<std::ptrdiff_t>(index) + 1; later != submission.indirectSegments.end(); ++later) segments.push_back({moved(later->start), later->target, later->words, later->waits, later->generation});
     std::ranges::sort(segments, {}, &Submission::IndirectSegment::start);
     submission.indirectSegments = std::move(segments);
     std::set<std::uint64_t> written;
