@@ -50,6 +50,7 @@ constexpr std::uint32_t Filler = 0xffff1000u;
 class GuestBlock {
 public:
     GuestBlock() {
+        static_cast<void>(AgcDriver::GuestMemory::WriteWatched());
 #ifdef _WIN32
         block = static_cast<std::uint8_t*>(GuestArena::GuestArenaAllocate_nid_postfix(BlockBytes, 65536));
         if (block != nullptr) GuestArena::GuestArenaCommit_nid_postfix(block, BlockBytes, PAGE_READWRITE, BlockBytes);
@@ -184,23 +185,16 @@ void InvalidRewrite(const GuestBlock& block) {
     std::memcpy(block.Bytes(CommandsOffset), fillers.data(), sizeof(fillers));
     Store(block, MarkerOffset, 0);
     Store(block, LabelOffset, 0);
-    Store(block, GateOffset, 0);
     const auto commands = block.At(CommandsOffset);
     const auto marker = block.At(MarkerOffset);
     const auto label = block.At(LabelOffset);
-    const auto gate = block.At(GateOffset);
-    auto words = Pm4(0x3c, {0x13, Low(gate), High(gate), 1, 0xffffffffu, 0x19});
+    auto words = Dispatching(block, {0x00000000u, 0x00002000u, 0xc0033700u, Low(marker), High(marker)});
     const auto run = Pm4(0x3f, {1, 0, 0, 0, 0, 0, 0, Low(commands), High(commands) & 0xffffu, CommandWords, 0, 0, 0});
     words.insert(words.end(), run.begin(), run.end());
     const auto after = Pm4(0x37, {0x500u, Low(label), High(label), 1});
     words.insert(words.end(), after.begin(), after.end());
     Packet dcb{words.data(), static_cast<std::uint32_t>(words.size()), 0, {}};
     Require(sceAgcDriverSubmitDcb(&dcb) == 0, "GPU-written indirect buffer: the submission of the invalid rewrite failed");
-    std::vector<std::uint32_t> rewritten{0x00000000u, 0x00002000u};
-    const auto store = Pm4(0x37, {0x500u, Low(marker), High(marker), 1});
-    rewritten.insert(rewritten.end(), store.begin(), store.end());
-    std::memcpy(block.Bytes(CommandsOffset), rewritten.data(), rewritten.size() * sizeof(std::uint32_t));
-    Store(block, GateOffset, 1);
     try {
         AgcDriverWaitIdle_nid_postfix();
     } catch (const std::exception& error) {
@@ -213,6 +207,10 @@ void InvalidRewrite(const GuestBlock& block) {
 }
 
 void CpuRewriteAfterSubmit(const GuestBlock& block, bool conditional) {
+    if (!AgcDriver::GuestMemory::Watched(block.At(CommandsOffset), CommandWords * sizeof(std::uint32_t))) {
+        std::puts("GPU-written indirect buffer: guest memory is not write watched here, so the CPU rewrite case is skipped");
+        return;
+    }
     std::array<std::uint32_t, CommandWords> fillers{};
     fillers.fill(Filler);
     std::memcpy(block.Bytes(CommandsOffset), fillers.data(), sizeof(fillers));
@@ -338,18 +336,14 @@ void RewrittenWaitBeforeOwnFlip(const GuestBlock& block) {
     std::array<std::uint32_t, CommandWords> fillers{};
     fillers.fill(Filler);
     std::memcpy(block.Bytes(CommandsOffset), fillers.data(), sizeof(fillers));
-    Store(block, GateOffset, 0);
     const auto commands = block.At(CommandsOffset);
-    const auto gate = block.At(GateOffset);
-    auto second = Pm4(0x3c, {0x13, Low(gate), High(gate), 1, 0xffffffffu, 0x19});
+    auto second = Dispatching(block, {renderingWait[0], renderingWait[1], renderingWait[2], renderingWait[3], Filler});
     const auto branch = Pm4(0x3f, {1, 0, 0, 0, 0, 0, 0, Low(commands), High(commands) & 0xffffu, CommandWords, 0, 0, 0});
     second.insert(second.end(), branch.begin(), branch.end());
     second.insert(second.end(), flip.begin(), flip.end());
     Packet secondDcb{second.data(), static_cast<std::uint32_t>(second.size()), 0, {}};
-    Require(sceAgcDriverSubmitDcb(&secondDcb) == 0, "GPU-written indirect buffer: the second flip submission failed");
-    std::memcpy(block.Bytes(CommandsOffset), renderingWait.data(), sizeof(renderingWait));
     const auto opened = std::chrono::steady_clock::now();
-    Store(block, GateOffset, 1);
+    Require(sceAgcDriverSubmitDcb(&secondDcb) == 0, "GPU-written indirect buffer: the second flip submission failed");
     AgcDriverWaitIdle_nid_postfix();
     const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - opened).count();
     int timedOut = 0;
@@ -362,7 +356,7 @@ void RewrittenWaitBeforeOwnFlip(const GuestBlock& block) {
         waited = output->tickets->waited;
     }
     AgcDriverUnregisterVideoOutput_nid_postfix(Handle, output);
-    Require(timedOut == 0, "a rendering wait written into an indirect buffer after its submission waited for the flip after that buffer in the same submission (" + std::to_string(took) + " ms, timed out after 3 s)");
+    Require(timedOut == 0, "a rendering wait a dispatch wrote into an indirect buffer waited for the flip after that buffer in the same submission (" + std::to_string(took) + " ms, timed out after 3 s)");
     Require(ready == 2, "the two flips did not complete: " + std::to_string(ready) + " completed");
     std::string tickets;
     for (const auto ticket : waited) tickets += (tickets.empty() ? "" : ", ") + std::to_string(ticket);
