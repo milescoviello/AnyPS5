@@ -106,7 +106,11 @@ struct SpirvEmitterState {
     std::uint32_t hostSubgroupSize = 0;
     bool splitSubgroup = false;
     bool spannedWave = false;
+    bool spannedMultiWave = false;
+    std::uint32_t spannedWaveCount = 1;
     std::uint32_t spannedExchangeVariable = 0;
+    std::uint32_t spannedPairVariable = 0;
+    bool waveLdsPair = false;
     bool narrowSubgroupClock = false;
     bool float64DenormPreserve = false;
     bool depthRangeRemap = false;

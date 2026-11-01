@@ -30,17 +30,37 @@ namespace ShaderRecompiler
             return EmitBinaryU32(state, spv::OpBitwiseAnd, EmitLocalInvocationIndex(state), ConstantU32(state, 63u));
         }
 
+        std::uint32_t SpannedWaveIndex(SpirvEmitterState& state) {
+            return EmitBinaryU32(state, spv::OpShiftRightLogical, EmitLocalInvocationIndex(state), ConstantU32(state, 6u));
+        }
+
         std::uint32_t SpannedSlot(SpirvEmitterState& state, std::uint32_t index) {
             if (state.spannedExchangeVariable == 0u) {
-                state.spannedExchangeVariable = state.module.DefineGlobalVariable(TypeU32ArrayPointer(state, spv::StorageClassWorkgroup, 64u), spv::StorageClassWorkgroup);
+                state.spannedExchangeVariable = state.module.DefineGlobalVariable(TypeU32ArrayPointer(state, spv::StorageClassWorkgroup, 64u * state.spannedWaveCount), spv::StorageClassWorkgroup);
                 state.module.AddName(state.spannedExchangeVariable, "wave_exchange");
             }
+            const auto slot = state.spannedMultiWave ? EmitAddU32(state, EmitBinaryU32(state, spv::OpShiftLeftLogical, SpannedWaveIndex(state), ConstantU32(state, 6u)), index) : index;
             const auto pointer = state.module.AllocateId();
-            state.module.AddFunction(spv::OpAccessChain, TypeU32ElementPointer(state, spv::StorageClassWorkgroup), pointer, state.spannedExchangeVariable, index);
+            state.module.AddFunction(spv::OpAccessChain, TypeU32ElementPointer(state, spv::StorageClassWorkgroup), pointer, state.spannedExchangeVariable, slot);
+            return pointer;
+        }
+
+        std::uint32_t SpannedPairSlot(SpirvEmitterState& state, std::uint32_t word) {
+            if (state.spannedPairVariable == 0u) {
+                state.spannedPairVariable = state.module.DefineGlobalVariable(TypeU32ArrayPointer(state, spv::StorageClassWorkgroup, 2u * state.spannedWaveCount), spv::StorageClassWorkgroup);
+                state.module.AddName(state.spannedPairVariable, "wave_pair_sync");
+            }
+            const auto slot = EmitAddU32(state, EmitBinaryU32(state, spv::OpShiftLeftLogical, SpannedWaveIndex(state), ConstantU32(state, 1u)), ConstantU32(state, word));
+            const auto pointer = state.module.AllocateId();
+            state.module.AddFunction(spv::OpAccessChain, TypeU32ElementPointer(state, spv::StorageClassWorkgroup), pointer, state.spannedPairVariable, slot);
             return pointer;
         }
 
         void SpannedBarrier(SpirvEmitterState& state) {
+            if (state.spannedMultiWave) {
+                EmitSpannedPairBarrier(state);
+                return;
+            }
             state.module.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::MemorySemanticsAcquireReleaseMask | spv::MemorySemanticsWorkgroupMemoryMask));
         }
 
@@ -83,6 +103,68 @@ namespace ShaderRecompiler
 
     bool HostSubgroupSingleLane(const SpirvEmitterState& state) {
         return state.hostSubgroupSize == 1u;
+    }
+
+    void EmitSpannedPairBarrier(SpirvEmitterState& state) {
+        const auto semantics = ConstantU32(state, spv::MemorySemanticsAcquireReleaseMask | spv::MemorySemanticsWorkgroupMemoryMask);
+        const auto acquire = ConstantU32(state, spv::MemorySemanticsAcquireMask | spv::MemorySemanticsWorkgroupMemoryMask);
+        const auto release = ConstantU32(state, spv::MemorySemanticsReleaseMask | spv::MemorySemanticsWorkgroupMemoryMask);
+        const auto workgroup = ConstantU32(state, spv::ScopeWorkgroup);
+        state.module.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeSubgroup), workgroup, semantics);
+        const auto count = SpannedPairSlot(state, 0u);
+        const auto generation = SpannedPairSlot(state, 1u);
+        const auto elected = state.module.AllocateId();
+        state.module.AddFunction(spv::OpGroupNonUniformElect, TypeBool(state), elected, ConstantU32(state, spv::ScopeSubgroup));
+        const auto arrive = state.module.AllocateId();
+        const auto electMerge = state.module.AllocateId();
+        state.module.AddFunction(spv::OpSelectionMerge, electMerge, spv::SelectionControlMaskNone);
+        state.module.AddFunction(spv::OpBranchConditional, elected, arrive, electMerge);
+        EmitLabel(state, arrive);
+        const auto seen = state.module.AllocateId();
+        state.module.AddFunction(spv::OpAtomicLoad, TypeU32(state), seen, generation, workgroup, acquire);
+        const auto prior = state.module.AllocateId();
+        state.module.AddFunction(spv::OpAtomicIAdd, TypeU32(state), prior, count, workgroup, semantics, ConstantU32(state, 1u));
+        const auto last = Binary(state, spv::OpIEqual, TypeBool(state), prior, ConstantU32(state, 1u));
+        const auto open = state.module.AllocateId();
+        const auto wait = state.module.AllocateId();
+        const auto arriveMerge = state.module.AllocateId();
+        state.module.AddFunction(spv::OpSelectionMerge, arriveMerge, spv::SelectionControlMaskNone);
+        state.module.AddFunction(spv::OpBranchConditional, last, open, wait);
+        EmitLabel(state, open);
+        state.module.AddFunction(spv::OpAtomicStore, count, workgroup, ConstantU32(state, spv::MemorySemanticsMaskNone), ConstantU32(state, 0u));
+        state.module.AddFunction(spv::OpAtomicStore, generation, workgroup, release, EmitAddU32(state, seen, ConstantU32(state, 1u)));
+        state.module.AddFunction(spv::OpBranch, arriveMerge);
+        EmitLabel(state, wait);
+        const auto header = state.module.AllocateId();
+        const auto body = state.module.AllocateId();
+        const auto cont = state.module.AllocateId();
+        const auto loopMerge = state.module.AllocateId();
+        state.module.AddFunction(spv::OpBranch, header);
+        EmitLabel(state, header);
+        state.module.AddFunction(spv::OpLoopMerge, loopMerge, cont, spv::LoopControlMaskNone);
+        state.module.AddFunction(spv::OpBranch, body);
+        EmitLabel(state, body);
+        const auto now = state.module.AllocateId();
+        state.module.AddFunction(spv::OpAtomicLoad, TypeU32(state), now, generation, workgroup, acquire);
+        const auto same = Binary(state, spv::OpIEqual, TypeBool(state), now, seen);
+        state.module.AddFunction(spv::OpBranchConditional, same, cont, loopMerge);
+        EmitLabel(state, cont);
+        state.module.AddFunction(spv::OpBranch, header);
+        EmitLabel(state, loopMerge);
+        state.module.AddFunction(spv::OpBranch, arriveMerge);
+        EmitLabel(state, arriveMerge);
+        state.module.AddFunction(spv::OpBranch, electMerge);
+        EmitLabel(state, electMerge);
+        state.module.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeSubgroup), workgroup, semantics);
+    }
+
+    void EmitSpannedPairInit(SpirvEmitterState& state) {
+        const auto first = Binary(state, spv::OpIEqual, TypeBool(state), EmitBinaryU32(state, spv::OpBitwiseAnd, EmitLocalInvocationIndex(state), ConstantU32(state, 63u)), ConstantU32(state, 0u));
+        EmitIfCondition(state, first, [&] {
+            state.module.AddFunction(spv::OpStore, SpannedPairSlot(state, 0u), ConstantU32(state, 0u));
+            state.module.AddFunction(spv::OpStore, SpannedPairSlot(state, 1u), ConstantU32(state, 0u));
+        });
+        state.module.AddFunction(spv::OpControlBarrier, ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::ScopeWorkgroup), ConstantU32(state, spv::MemorySemanticsAcquireReleaseMask | spv::MemorySemanticsWorkgroupMemoryMask));
     }
 
     void EmitSubgroupBallot(SpirvEmitterState& state, std::uint32_t result, std::uint32_t predicate) {

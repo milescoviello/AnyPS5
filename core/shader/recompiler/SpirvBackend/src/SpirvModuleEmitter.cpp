@@ -1,3 +1,4 @@
+#include "SpirvBackend/SpirvMemory/SpirvSubgroup.hpp"
 #include "SpirvBackend/SpirvModuleEmitter.hpp"
 #include "SpirvBackend/SpirvBufferFormat.hpp"
 #include "SpirvBackend/SpirvEmitterHelpers.hpp"
@@ -1827,6 +1828,7 @@ void EmitProgram(SpirvEmitterState& state) {
         }
     }
     EmitLdsBufferBase(state);
+    if (state.spannedMultiWave) EmitSpannedPairInit(state);
     if (state.requirements.ldsLock) {
         const auto firstInvocation = state.module.AllocateId();
         state.module.AddFunction(spv::OpIEqual, TypeBool(state), firstInvocation, EmitLocalInvocationIndex(state), ConstantU32(state, 0u));

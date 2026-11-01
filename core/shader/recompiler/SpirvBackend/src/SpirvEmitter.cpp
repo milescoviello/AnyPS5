@@ -306,7 +306,12 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
     if (state.splitSubgroup && (state.requirements.subgroupBallot || state.requirements.subgroupShuffle)) state.requirements.subgroupLocalInvocationId = true;
     const auto* workgroup = ShaderWorkgroupInputFor(state);
     const bool halfHost = workgroup != nullptr && program.WaveSize() == 64u && workgroup->hostSubgroupSize == 32u;
-    state.spannedWave = halfHost && target.spannedWaves && program.Resources().stage == IrShaderStage::Compute && !state.requirements.computeDerivatives && std::max(workgroup->threadsNum[0], 1u) * std::max(workgroup->threadsNum[1], 1u) * std::max(workgroup->threadsNum[2], 1u) == 64u;
+    static const bool spannedMultiWave = std::getenv("APS5_SPANNED_MULTIWAVE") != nullptr;
+    const std::uint32_t spanThreads = workgroup != nullptr ? std::max(workgroup->threadsNum[0], 1u) * std::max(workgroup->threadsNum[1], 1u) * std::max(workgroup->threadsNum[2], 1u) : 0u;
+    const bool spanCompute = halfHost && (target.spannedWaves || spannedMultiWave) && program.Resources().stage == IrShaderStage::Compute && !state.requirements.computeDerivatives;
+    state.spannedWave = spanCompute && (spanThreads == 64u || (spannedMultiWave && spanThreads % 64u == 0u && spanThreads <= 1024u));
+    state.spannedMultiWave = state.spannedWave && spanThreads > 64u;
+    state.spannedWaveCount = state.spannedWave ? spanThreads / 64u : 1u;
     state.laneCount = halfHost && !state.spannedWave ? 2u : 1u;
     if (state.spannedWave) {
         state.requirements.subgroupLocalInvocationId = true;
@@ -323,6 +328,10 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
         state.tableIndexNonUniform = threads > program.WaveSize() || !oneSubgroup;
     }
     state.waveLdsScope = WaveLdsScope(program, workgroup, state.laneCount);
+    if (state.spannedMultiWave) {
+        state.waveLdsPair = WaveLdsScope(program, workgroup, 2u) != 0u;
+        state.waveLdsScope = 0u;
+    }
     if (const char* guard = std::getenv("APS5_LOOP_GUARD")) state.loopGuardLimit = static_cast<std::uint32_t>(std::strtoul(guard, nullptr, 0));
     // Stopped invocations would leave the wave LDS barriers incomplete.
     state.bdaStopsInvocations = state.waveLdsScope == 0 && !state.spannedWave && BdaInvocationsMayStop(program) && program.Resources().stage != IrShaderStage::Mesh;
