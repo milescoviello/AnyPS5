@@ -95,6 +95,8 @@ std::shared_ptr<const ShaderRecompiler::RecompileResult> Driver::materializeDraw
         request.layout.pushConstantSizeBytes = std::min(request.layout.pushConstantSizeBytes, ShaderRecompiler::DepthRemapPushOffsetBytes - pushOffset);
     }
     if (request.target.deviceImageTables) request.target.deviceImageTables = localDevice->DeviceImagesServe(program.binary.codeAddress);
+    static const bool dumpDrawShaders = std::getenv("APS5_DUMP_SHADERS") != nullptr;
+    if (dumpDrawShaders) static_cast<void>(dumpRequest(program.binary.codeAddress, request));
     const auto waitedBefore = traceCapSync() || profile ? Graphics::Recorder::ThreadWaitedMs() : 0.0;
     const bool heapCandidate = heapPartners && (program.binary.stage == Stage::Fragment || HeapPreRasterStage(program.binary.stage)) && !HeapStageExcluded(program.binary.stage) && HeapFragmentsEnabled();
     const auto fragmentOnHeap = [&] {
