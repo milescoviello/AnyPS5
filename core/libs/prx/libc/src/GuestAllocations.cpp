@@ -75,6 +75,7 @@ std::atomic<void (*)(std::uintptr_t, std::size_t)> invalidator{nullptr};
 std::atomic<bool (*)(std::uintptr_t, std::size_t)> pinWaiter{nullptr};
 std::atomic<void (*)(const Mapped&, std::uint64_t)> gpuMapObserver{nullptr};
 std::atomic<void (*)(std::uintptr_t, std::size_t)> unmapObserver{nullptr};
+std::atomic<void (*)(std::uintptr_t, std::size_t)> unmapFence{nullptr};
 std::atomic<std::uint32_t> gpuMapObserverCalls{0};
 
 std::chrono::milliseconds pinWait() {
@@ -734,6 +735,14 @@ void GuestAllocationsUnmap_nid_postfix(void* mutation, const void* pointer, std:
 
 void GuestAllocationsSetUnmapObserver_nid_postfix(void (*callback)(std::uintptr_t, std::size_t)) {
     unmapObserver.store(callback, std::memory_order_release);
+}
+
+void GuestAllocationsSetUnmapFence_nid_postfix(void (*callback)(std::uintptr_t, std::size_t)) {
+    unmapFence.store(callback, std::memory_order_release);
+}
+
+void GuestAllocationsUnmapFence_nid_postfix(std::uintptr_t address, std::size_t bytes) {
+    if (const auto fence = unmapFence.load(std::memory_order_acquire)) fence(address, bytes);
 }
 
 Lease GuestAllocationsAcquire_nid_postfix() {

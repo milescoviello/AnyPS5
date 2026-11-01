@@ -16,7 +16,10 @@
 #include "ShaderDiskCache.hpp"
 #include "prx/libc/include/GuestArena.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <cstdint>
 #include <cstdio>
 #include <cerrno>
@@ -137,6 +140,7 @@ Driver& Driver::Get() {
 }
 
 Driver::~Driver() {
+    GuestAllocations::GuestAllocationsSetUnmapFence_nid_postfix(nullptr);
     GuestAllocations::GuestAllocationsSetGpuMapObserver_nid_postfix(nullptr);
     stop();
 }
@@ -206,6 +210,39 @@ Driver::Driver() {
         stop();
         throw;
     }
+    GuestAllocations::GuestAllocationsSetUnmapFence_nid_postfix([](std::uintptr_t address, std::size_t bytes) {
+        static const std::uint32_t timeoutMs = [] {
+            const char* text = std::getenv("APS5_UNMAP_FENCE");
+            if (text == nullptr) return 0u;
+            const auto value = static_cast<std::uint32_t>(std::strtoul(text, nullptr, 0));
+            return value < 100u ? 5000u : value;
+        }();
+        if (timeoutMs == 0u || onWorkerThread()) return;
+        bool gpu = false;
+        for (auto cursor = address; !gpu && cursor < address + bytes;) {
+            const auto range = GuestAllocations::GuestAllocationsLookup_nid_postfix(cursor, true);
+            if (range == nullptr || range->address >= address + bytes) break;
+            gpu = range->gpu;
+            cursor = std::max<std::uintptr_t>(cursor + 1, static_cast<std::uintptr_t>(range->address + range->bytes));
+        }
+        if (!gpu) return;
+        auto& driver = Driver::Get();
+        const auto [accepted, completed] = driver.SerialProgress();
+        if (completed >= accepted) return;
+        const auto started = std::chrono::steady_clock::now();
+        bool idle = false;
+        try {
+            idle = driver.WaitIdleFor(std::chrono::milliseconds(timeoutMs));
+            if (idle) {
+                std::lock_guard gpuLock(GuestMemory::GpuMutex());
+                if (const auto current = driver.device.Load()) current->WaitIdle();
+            }
+        } catch (const std::exception&) {
+            return;
+        }
+        static std::atomic<std::uint32_t> reports{0};
+        if (reports.fetch_add(1, std::memory_order_relaxed) < 64) std::fprintf(stderr, "[unmap-fence] unmap 0x%llx+0x%zx waited %.0f ms for %llu queued submissions (%s)\n", static_cast<unsigned long long>(address), bytes, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count(), static_cast<unsigned long long>(accepted - completed), idle ? "drained" : "timed out");
+    });
     GuestAllocations::GuestAllocationsSetGpuMapObserver_nid_postfix([](const GuestAllocations::Mapped& ranges, std::uint64_t generation) {
         const auto import = [&] {
             try {
