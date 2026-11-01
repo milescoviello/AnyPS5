@@ -229,6 +229,7 @@ void CpuRewriteAfterSubmit(const GuestBlock& block, bool conditional) {
     Packet dcb{words.data(), static_cast<std::uint32_t>(words.size()), 0, {}};
     Require(sceAgcDriverSubmitDcb(&dcb) == 0, "GPU-written indirect buffer: the submission of the CPU rewrite failed");
     const auto store = Pm4(0x37, {0x500u, Low(marker), High(marker), 1});
+    std::fprintf(stderr, "[ibdbg] cpu rewrite at 0x%llx tracker %llu\n", static_cast<unsigned long long>(commands), static_cast<unsigned long long>(AgcDriver::GuestMemory::TrackerGeneration()));
     std::memcpy(block.Bytes(CommandsOffset), store.data(), store.size() * sizeof(std::uint32_t));
     Store(block, GateOffset, 1);
     AgcDriverWaitIdle_nid_postfix();

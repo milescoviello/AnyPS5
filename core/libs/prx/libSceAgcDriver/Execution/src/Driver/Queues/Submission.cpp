@@ -28,6 +28,7 @@ namespace {
 
 void noteIndirectSegment(Submission& submission, std::size_t start, const std::uint32_t* target, std::size_t words) {
     const auto generation = GuestMemory::CollectWrites(reinterpret_cast<std::uint64_t>(target), words * sizeof(std::uint32_t));
+    std::fprintf(stderr, "[ibdbg] note 0x%llx +%zu gen %llu watched %d\n", static_cast<unsigned long long>(reinterpret_cast<std::uint64_t>(target)), words * sizeof(std::uint32_t), static_cast<unsigned long long>(generation), GuestMemory::Watched(reinterpret_cast<std::uint64_t>(target), words * sizeof(std::uint32_t)) ? 1 : 0);
     if (submission.commands.size() - start != words || !std::equal(submission.commands.begin() + static_cast<std::ptrdiff_t>(start), submission.commands.end(), target)) return;
     submission.indirectSegments.push_back({start, target, words, {}, generation});
 }
@@ -273,6 +274,12 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
     const auto segment = submission.indirectSegments[index];
     const auto address = reinterpret_cast<std::uint64_t>(segment.target);
     const auto bytes = segment.words * sizeof(std::uint32_t);
+    {
+        const bool watchedNow = GuestMemory::Watched(address, bytes);
+        const auto newest = GuestMemory::NewestStamp(address, bytes);
+        const bool unchanged = segment.generation != 0 && GuestMemory::UnchangedSinceCollected(address, bytes, segment.generation);
+        std::fprintf(stderr, "[ibdbg] refresh 0x%llx +%zu gen %llu watched %d newest %llu unchanged %d tracker %llu\n", static_cast<unsigned long long>(address), bytes, static_cast<unsigned long long>(segment.generation), watchedNow ? 1 : 0, static_cast<unsigned long long>(newest), unchanged ? 1 : 0, static_cast<unsigned long long>(GuestMemory::TrackerGeneration()));
+    }
     if (segment.generation != 0 && !GuestMemory::UnchangedSinceCollected(address, bytes, segment.generation)) return false;
     if (DrawPipeline::Active() && DrawPipeline::Queue0().Overlaps(address, bytes)) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x3f);
     if (DrawFinisher::Busy() && DrawFinisher::Get().PendingOverlaps(address, address + bytes)) DrawFinisher::Get().Drain();
