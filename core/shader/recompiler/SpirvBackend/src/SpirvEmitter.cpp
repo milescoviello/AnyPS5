@@ -329,7 +329,8 @@ std::vector<std::uint32_t> SpirvEmitter::Emit(const IrProgram& program, const Sh
     }
     state.waveLdsScope = WaveLdsScope(program, workgroup, state.laneCount);
     if (state.spannedMultiWave) {
-        state.waveLdsPair = WaveLdsScope(program, workgroup, 2u) != 0u;
+        static const bool noLdsPair = std::getenv("APS5_SPANNED_NO_LDS_PAIR") != nullptr;
+        state.waveLdsPair = !noLdsPair && WaveLdsScope(program, workgroup, 2u) != 0u;
         state.waveLdsScope = 0u;
     }
     if (const char* guard = std::getenv("APS5_LOOP_GUARD")) state.loopGuardLimit = static_cast<std::uint32_t>(std::strtoul(guard, nullptr, 0));

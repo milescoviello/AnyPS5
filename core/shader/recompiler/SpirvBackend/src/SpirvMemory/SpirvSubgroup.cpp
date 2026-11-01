@@ -3,6 +3,7 @@
 #include "SpirvBackend/SpirvMemory/SpirvSubgroup.hpp"
 #include <spirv/unified1/GLSL.std.450.h>
 #include <spirv/unified1/spirv.hpp>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 #include <SpirvBackend/SpirvEmitterInstructions.hpp>
@@ -57,7 +58,8 @@ namespace ShaderRecompiler
         }
 
         void SpannedBarrier(SpirvEmitterState& state) {
-            if (state.spannedMultiWave) {
+            static const bool workgroupBarrier = std::getenv("APS5_SPANNED_WG_BARRIER") != nullptr;
+            if (state.spannedMultiWave && !workgroupBarrier) {
                 EmitSpannedPairBarrier(state);
                 return;
             }
