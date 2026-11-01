@@ -279,13 +279,38 @@ bool Driver::refreshIndirectSegment(Submission& submission, std::size_t index) {
         const auto* recorder = Graphics::Recorder::Active();
         return recorder != nullptr && recorder->PendingWriterSerial(address, bytes) != 0;
     }();
-    if (!pipelineWrites && !finisherWrites && !recordedWrites) return false;
+    static const bool trace = std::getenv("APS5_TRACE_INDIRECT_REFRESH") != nullptr;
+    static std::atomic<std::uint64_t> reached{0}, skipped{0}, skippedDiffer{0}, spliced{0}, same{0};
+    const auto count = trace ? reached.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
+    const auto summary = [&] {
+        if (trace && (count & (count - 1)) == 0) std::fprintf(stderr, "[ib-refresh] %llu reached: %llu without queued GPU writes kept as copied (%llu differ from the copy), %llu changed, %llu unchanged\n", static_cast<unsigned long long>(count), static_cast<unsigned long long>(skipped.load()), static_cast<unsigned long long>(skippedDiffer.load()), static_cast<unsigned long long>(spliced.load()), static_cast<unsigned long long>(same.load()));
+    };
+    if (!pipelineWrites && !finisherWrites && !recordedWrites) {
+        if (trace) {
+            std::vector<std::uint32_t> now(segment.words);
+            GuestMemory::Read(address, std::as_writable_bytes(std::span(now)), alignof(std::uint32_t));
+            skipped.fetch_add(1, std::memory_order_relaxed);
+            if (!std::equal(now.begin(), now.end(), submission.commands.begin() + static_cast<std::ptrdiff_t>(segment.start))) {
+                const auto n = skippedDiffer.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (n <= 50 || (n & (n - 1)) == 0) std::fprintf(stderr, "[ib-refresh] kept #%llu queue 0x%x buffer 0x%llx (%zu dwords) at dword %zu differs from its copy with no queued GPU writes; runs as copied\n", static_cast<unsigned long long>(n), submission.queue, static_cast<unsigned long long>(address), segment.words, segment.start);
+            }
+            summary();
+        }
+        return false;
+    }
+    if (trace) std::fprintf(stderr, "[ib-refresh] #%llu queue 0x%x buffer 0x%llx (%zu dwords): queued writes pipeline %d finisher %d recorded %d\n", static_cast<unsigned long long>(count), submission.queue, static_cast<unsigned long long>(address), segment.words, pipelineWrites ? 1 : 0, finisherWrites ? 1 : 0, recordedWrites ? 1 : 0);
     if (pipelineWrites) DrawPipeline::Queue0().Drain(DrawPipeline::DrainReason::Packet, 0x3f);
     if (finisherWrites) DrawFinisher::Get().Drain();
     std::vector<std::uint32_t> words(segment.words);
     GuestMemory::Read(address, std::as_writable_bytes(std::span(words)), alignof(std::uint32_t));
     const auto end = segment.start + segment.words;
-    if (std::equal(words.begin(), words.end(), submission.commands.begin() + static_cast<std::ptrdiff_t>(segment.start))) return false;
+    if (std::equal(words.begin(), words.end(), submission.commands.begin() + static_cast<std::ptrdiff_t>(segment.start))) {
+        if (trace) same.fetch_add(1, std::memory_order_relaxed);
+        summary();
+        return false;
+    }
+    if (trace) spliced.fetch_add(1, std::memory_order_relaxed);
+    summary();
     Submission expanded{};
     expanded.queue = submission.queue;
     std::size_t budget = std::size_t{1} << 26u;
