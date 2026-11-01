@@ -60,6 +60,9 @@ bool DrawProfiled() {
 }
 
 std::uint64_t syncCounts[5] = {};
+thread_local const void* noteSite = nullptr;
+constexpr std::size_t NoteSiteMask = (1u << 20) - 1u;
+const void* noteSites[NoteSiteMask + 1] = {};
 // Fence wait time by sync source (APS5_PROFILE_DRAW), and the source CountSync announced for the
 // Sync/SyncThrough that follows it on this thread.
 double syncWaitedMs[5] = {};
@@ -3026,6 +3029,7 @@ bool Recorder::noteWrite(std::uint64_t address, std::size_t bytes, bool ownLabel
     const auto end = address + bytes;
     open->writes.emplace_back(address, end);
     open->writeNotes.push_back(++writeNoteCount);
+    noteSites[writeNoteCount & NoteSiteMask] = noteSite;
     if (published != nullptr && !SnapshotCovers(published.get(), address, end)) published = nullptr;
     open->writeValues.push_back(static_cast<std::int16_t>(value));
     open->writeWords.push_back(word);
@@ -3055,6 +3059,7 @@ void Recorder::noteWriteOn(Batch& batch, std::uint64_t address, std::size_t byte
     // moves as well, so a poller re-consults the label table for a completion label.
     batch.writes.emplace_back(address, address + bytes);
     batch.writeNotes.push_back(++writeNoteCount);
+    noteSites[writeNoteCount & NoteSiteMask] = noteSite;
     if (published != nullptr && !SnapshotCovers(published.get(), address, address + bytes)) published = nullptr;
     batch.writeValues.push_back(-1);
     batch.writeWords.push_back(-1);
@@ -3075,6 +3080,7 @@ void Recorder::markOverwritten(std::uint64_t address, std::uint64_t end) {
 }
 
 void Recorder::NotePendingWrite(std::uint64_t address, std::size_t bytes) {
+    noteSite = __builtin_return_address(0);
     if (!noteWrite(address, bytes)) return;
     const std::array ranges{std::pair{address, address + bytes}};
     publishPendingWrites(ranges);
@@ -3084,6 +3090,7 @@ void Recorder::NotePendingWrite(std::uint64_t address, std::size_t bytes) {
 }
 
 void Recorder::NotePendingFill(std::uint64_t address, std::size_t bytes, std::uint8_t value) {
+    noteSite = __builtin_return_address(0);
     if (!noteWrite(address, bytes, false, value, value * std::int64_t{0x01010101})) return;
     const std::array ranges{std::pair{address, address + bytes}};
     publishPendingWrites(ranges);
@@ -3091,6 +3098,7 @@ void Recorder::NotePendingFill(std::uint64_t address, std::size_t bytes, std::ui
 }
 
 void Recorder::NotePendingWordFill(std::uint64_t address, std::size_t bytes, std::uint32_t word) {
+    noteSite = __builtin_return_address(0);
     const int value = word == (word & 0xffu) * 0x01010101u ? static_cast<int>(word & 0xffu) : -1;
     if (!noteWrite(address, bytes, false, value, word)) return;
     const std::array ranges{std::pair{address, address + bytes}};
@@ -3099,6 +3107,7 @@ void Recorder::NotePendingWordFill(std::uint64_t address, std::size_t bytes, std
 }
 
 void Recorder::NotePendingWrites(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
+    noteSite = __builtin_return_address(0);
     bool publish = false;
     for (const auto& [begin, end] : ranges) {
         if (end > begin && noteWrite(begin, static_cast<std::size_t>(end - begin))) publish = true;
@@ -3110,7 +3119,9 @@ void Recorder::NotePendingWrites(std::span<const std::pair<std::uint64_t, std::u
 
 void Recorder::NoteStampedWrites(std::span<const std::pair<std::uint64_t, std::uint64_t>> ranges) {
     const auto first = writeNoteCount + 1;
+    const auto* caller = __builtin_return_address(0);
     NotePendingWrites(ranges);
+    for (auto note = first; note <= writeNoteCount; ++note) noteSites[note & NoteSiteMask] = caller;
     if (open == nullptr) return;
     for (auto note = first; note <= writeNoteCount; ++note) open->stampedNotes.push_back(note);
 }
@@ -3218,6 +3229,32 @@ std::uint64_t Recorder::PendingWriterSerial(std::uint64_t address, std::size_t b
         if (writes(**it)) return (*it)->serial;
     }
     return 0;
+}
+
+Recorder::OverlapKinds Recorder::PendingOverlapKinds(std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> exceptNotes) const {
+    OverlapKinds kinds;
+    const auto end = address + bytes;
+    const auto scan = [&](const Batch& batch) {
+        for (std::size_t index = 0; index < batch.writes.size() && index < batch.writeNotes.size(); ++index) {
+            const auto& [begin, finish] = batch.writes[index];
+            if (address >= finish || begin >= end) continue;
+            const auto note = batch.writeNotes[index];
+            if (std::find(exceptNotes.begin(), exceptNotes.end(), note) != exceptNotes.end()) {
+                ++kinds.own;
+            } else if (std::find(batch.stampedNotes.begin(), batch.stampedNotes.end(), note) != batch.stampedNotes.end()) {
+                ++kinds.stamped;
+            } else {
+                ++kinds.unstamped;
+                if (kinds.site == nullptr) kinds.site = noteSites[note & NoteSiteMask];
+            }
+        }
+    };
+    if (open != nullptr) {
+        scan(*open);
+        kinds.open = kinds.own + kinds.stamped + kinds.unstamped != 0;
+    }
+    for (const auto& batch : inFlight) scan(*batch);
+    return kinds;
 }
 
 bool Recorder::signaled(const Batch& batch) const {

@@ -189,6 +189,12 @@ public:
     bool OpenWriteOverlaps(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t PendingWriterSerial(std::uint64_t address, std::size_t bytes) const;
     std::uint64_t PendingWriterSerial(std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> exceptNotes) const;
+    struct OverlapKinds {
+        std::uint64_t own = 0, stamped = 0, unstamped = 0;
+        const void* site = nullptr;
+        bool open = false;
+    };
+    OverlapKinds PendingOverlapKinds(std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> exceptNotes) const;
     // What SyncThrough(address, bytes) would wait for, for the [hooksync] attribution: the newest
     // batch whose noted range overlaps the access (the open batch counts first, with the serial it
     // will get), whether that batch's fence has already signaled (its GPU work is done, so the

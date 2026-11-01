@@ -23,6 +23,8 @@
 #include "RdnaDecoder/include/RdnaDecoder/RdnaDescriptorFormat.hpp"
 #include "IntermediateRepresentation/include/IntermediateRepresentation/IrMetadata/BufferFormat.hpp"
 #include <algorithm>
+#include <dlfcn.h>
+#include <map>
 #include <filesystem>
 #include <array>
 #include <bit>
@@ -4313,6 +4315,46 @@ void waitForIdlePublish(const char* reason) {
 
 }
 
+static void traceFlushSync(const Recorder& recorder, std::uint64_t address, std::size_t bytes, std::span<const std::uint64_t> ownNotes, const char* reason) {
+    static const bool enabled = std::getenv("APS5_TRACE_FLUSH_SYNC_KINDS") != nullptr;
+    if (!enabled) return;
+    static std::mutex mutex;
+    static std::map<std::string, std::array<std::uint64_t, 6>> byReason;
+    static std::map<std::uintptr_t, std::uint64_t> sites;
+    static std::uint64_t total = 0;
+    const auto kinds = recorder.PendingOverlapKinds(address, bytes, ownNotes);
+    std::lock_guard lock(mutex);
+    auto& row = byReason[reason != nullptr ? reason : "(none)"];
+    ++row[0];
+    if (kinds.unstamped != 0) ++row[1];
+    else if (kinds.stamped != 0) ++row[2];
+    else if (kinds.own != 0) ++row[3];
+    else ++row[4];
+    if (kinds.open) ++row[5];
+    if (kinds.site != nullptr) {
+        Dl_info info{};
+        const auto offset = dladdr(kinds.site, &info) != 0 && info.dli_fbase != nullptr ? reinterpret_cast<std::uintptr_t>(kinds.site) - reinterpret_cast<std::uintptr_t>(info.dli_fbase) : reinterpret_cast<std::uintptr_t>(kinds.site);
+        ++sites[offset];
+    }
+    if (++total % 2000 != 0) return;
+    std::string text;
+    for (const auto& [name, counts] : byReason) {
+        char part[256];
+        std::snprintf(part, sizeof(part), " %s: %llu (unstamped %llu, other stamped only %llu, own only %llu, read only %llu; open %llu)", name.c_str(), static_cast<unsigned long long>(counts[0]), static_cast<unsigned long long>(counts[1]), static_cast<unsigned long long>(counts[2]), static_cast<unsigned long long>(counts[3]), static_cast<unsigned long long>(counts[4]), static_cast<unsigned long long>(counts[5]));
+        text += part;
+    }
+    std::vector<std::pair<std::uint64_t, std::uintptr_t>> top;
+    for (const auto& [site, count] : sites) top.emplace_back(count, site);
+    std::sort(top.rbegin(), top.rend());
+    text += " | unstamped note callers:";
+    for (std::size_t index = 0; index < top.size() && index < 6; ++index) {
+        char part[64];
+        std::snprintf(part, sizeof(part), " +0x%llx x%llu", static_cast<unsigned long long>(top[index].second), static_cast<unsigned long long>(top[index].first));
+        text += part;
+    }
+    std::fprintf(stderr, "[flush-sync] %llu flush syncs by reason:%s\n", static_cast<unsigned long long>(total), text.c_str());
+}
+
 bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, const StorageTexture* except, const char* reason, PublishScope scope, bool* published, bool waited) {
     static_cast<void>(FlushDepthPlanes(address, bytes));
     if (published != nullptr) *published = false;
@@ -4407,6 +4449,7 @@ bool StorageTexture::FlushPending(std::uint64_t address, std::size_t bytes, cons
     std::lock_guard gpu(GuestMemory::GpuMutex());
     if (!ownNotes.empty() && (flush.size() != 1 || std::any_of(flush.begin(), flush.end(), [](const std::shared_ptr<StorageTexture>& texture) { return ExistingHostImportFor(texture->context, texture->descriptor.baseAddress, static_cast<std::size_t>(texture->guestBytes)) == nullptr; }))) ownNotes.clear();
     if (auto* recorder = Recorder::Active(); recorder != nullptr && !Recorder::InCompletion() && recorder->PendingWriterSerial(address, bytes, ownNotes) != 0) {
+        traceFlushSync(*recorder, address, bytes, ownNotes, reason);
         try {
             recorder->Reap();
             if (const auto writer = recorder->PendingWriterSerial(address, bytes, ownNotes); writer == recorder->OpenSerial()) {
