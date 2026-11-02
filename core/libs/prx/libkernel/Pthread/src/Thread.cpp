@@ -1302,28 +1302,6 @@ Pthread APS5_VABI scePthreadSelf() {
 }
 
 void APS5_VABI scePthreadYield() {
-#ifdef _WIN32
-    thread_local unsigned int spins = 0;
-    thread_local std::uint64_t lastTsc = 0;
-    const auto now = __rdtsc();
-    if (now - lastTsc > 10000) {
-        spins = 0;
-    }
-    lastTsc = now;
-    if (SwitchToThread()) {
-        spins = 0;
-        return;
-    }
-    if (++spins < 512) {
-        _mm_pause();
-        return;
-    }
-    spins = 0;
-    Sleep(1);
-    lastTsc = __rdtsc();
-#else
-    std::this_thread::yield();
-#endif
 }
 
 int APS5_VABI scePthreadCancel(Pthread thread) {
