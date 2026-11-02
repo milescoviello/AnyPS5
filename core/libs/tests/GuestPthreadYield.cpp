@@ -9,19 +9,34 @@
 
 static constexpr int SCE_OK = 0;
 static constexpr int LONE_YIELDS = 4096;
+static constexpr int ROUNDS = 64;
 static constexpr std::uint64_t YIELD_LIMIT = 100000ull;
 
 static void Require(bool value) { if (!value) std::abort(); }
 
 static std::atomic<bool> workerPinned{false};
-static std::atomic<bool> workerDone{false};
+static std::atomic<bool> workerReady{false};
+static std::atomic<bool> start{false};
+static std::atomic<int> turn{0};
 
-static void* APS5_VABI SpinWork(void* arg) {
+static void WaitTurn(int value, std::uint64_t& yields) {
+    while (turn.load() != value) {
+        scePthreadYield();
+        Require(++yields < YIELD_LIMIT);
+    }
+}
+
+static void* APS5_VABI PingPong(void* arg) {
     const auto cpu = *static_cast<const KernelCpumask*>(arg);
     workerPinned.store(scePthreadSetaffinity(scePthreadSelf(), cpu) == SCE_OK);
-    volatile std::uint64_t sum = 0;
-    for (std::uint64_t i = 0; i < 2000000; ++i) sum = sum + i;
-    workerDone.store(true);
+    workerReady.store(true);
+    workerReady.notify_one();
+    start.wait(false);
+    std::uint64_t yields = 0;
+    for (int round = 0; round < ROUNDS; ++round) {
+        WaitTurn(2 * round + 1, yields);
+        turn.store(2 * round + 2);
+    }
     return nullptr;
 }
 
@@ -34,13 +49,18 @@ int main() {
     for (int call = 0; call < LONE_YIELDS; ++call) scePthreadYield();
 
     Pthread worker = nullptr;
-    Require(scePthreadCreate(&worker, nullptr, SpinWork, const_cast<KernelCpumask*>(&cpu), nullptr) == SCE_OK);
+    Require(scePthreadCreate(&worker, nullptr, PingPong, const_cast<KernelCpumask*>(&cpu), nullptr) == SCE_OK);
+    workerReady.wait(false);
+    Require(workerPinned.load());
+
     std::uint64_t yields = 0;
-    while (!workerDone.load()) {
-        scePthreadYield();
-        Require(++yields < YIELD_LIMIT);
+    start.store(true);
+    start.notify_one();
+    for (int round = 0; round < ROUNDS; ++round) {
+        Require(turn.load() == 2 * round);
+        turn.store(2 * round + 1);
+        WaitTurn(2 * round + 2, yields);
     }
     Require(scePthreadJoin(worker, nullptr) == SCE_OK);
-    Require(workerPinned.load());
     return 0;
 }
