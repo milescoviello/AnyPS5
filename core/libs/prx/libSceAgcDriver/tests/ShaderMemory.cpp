@@ -9784,6 +9784,45 @@ void verifySrtReadPatching() {
     require(remainingUses.size() == 1u && remainingUses.front().user->Opcode() == IrOpcode::ReferenceU32, "SRT read patching: the original read retains non-planning uses");
 }
 
+void verifySrtRuntimeIndirectReads() {
+    using namespace ShaderRecompiler;
+    IrProgram program;
+    program.Resources().stage = IrShaderStage::Compute;
+    MemoryInfo memory;
+    memory.kind = ResourceKind::ScalarAddress;
+    program.Resources().memoryInfo.push_back(memory);
+
+    auto& block = program.CreateBlock();
+    program.SetEntryBlock(block);
+    program.BlockOrder().push_back(&block);
+    IrBuilder builder(program);
+    builder.SetInsertionPoint(block);
+    auto& active = program.CreateValue(IrOpcode::Void, IrType::U1);
+    active.SetImmediateBool(true);
+    const auto load = [&](IrValue& address, std::uint32_t offset, std::uint32_t pc) -> IrValue& {
+        return builder.Emit(IrOpcode::LoadAddressU32, IrType::U32, {&address, &builder.Constant(offset), &builder.Constant(0u), &active}, MemoryFlags{0u, pc});
+    };
+    auto& root = builder.Emit(IrOpcode::GetAddressResource, IrType::AddressResource, {&builder.Constant(0u), &builder.Constant(0u)});
+    auto& low = load(root, 0x40u, 0x0u);
+    auto& high = load(root, 0x44u, 0x4u);
+    auto& table = builder.Emit(IrOpcode::GetAddressResource, IrType::AddressResource, {&low, &high});
+    auto& count = load(table, 0x0u, 0x8u);
+    auto& bound = builder.Emit(IrOpcode::IAdd32, IrType::U32, {&count, &builder.Constant(1u)});
+    std::array<IrValue*, 4> words{};
+    for (std::uint32_t word = 0; word < 4u; ++word) words[word] = &load(table, 0x10u + 4u * word, 0xcu + 4u * word);
+    auto& buffer = builder.Emit(IrOpcode::GetBufferResource, IrType::BufferResource, {words[0], words[1], words[2], words[3]});
+    static_cast<void>(buffer);
+
+    SrtWalker{}.BuildPlan(program);
+
+    const auto& reads = program.Resources().srtReads;
+    const auto planned = [&](const IrValue* read) { return std::any_of(reads.begin(), reads.end(), [&](const SrtRead& candidate) { return candidate.value == read; }); };
+    require(planned(&low) && planned(&high), "SRT runtime indirect reads: the pointer loaded from the SRT was not planned");
+    require(std::all_of(words.begin(), words.end(), planned), "SRT runtime indirect reads: a descriptor read through the loaded pointer was not planned");
+    require(!planned(&count), "SRT runtime indirect reads: a data read through a pointer loaded from memory was planned as a flat SRT word");
+    require(bound.Argument(0) == &count, "SRT runtime indirect reads: the data read through the loaded pointer was replaced by a flat read");
+}
+
 struct NestedRequest {
     std::vector<std::uint32_t> code;
     std::array<std::uint32_t, 2> userData{};
@@ -10875,6 +10914,7 @@ int main(int argc, char** argv) {
             verifyUniformVectorComponents();
             verifyWaterfallRuntimeValues();
             verifySrtReadPatching();
+            verifySrtRuntimeIndirectReads();
             std::cout << "SRT read patching replaces repeated and multiple uses\n";
             return 0;
         }

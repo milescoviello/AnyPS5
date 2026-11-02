@@ -35,6 +35,7 @@ void PlanBuilder::Run() {
     }
     for (auto& block : _program.Blocks()) {
         for (IrValue* inst : block->Instructions()) {
+            if (inst->Opcode() == IrOpcode::LoadAddressU32 && !_visited.contains(inst) && LoadedFromMemory(*inst->Argument(0))) continue;
             if (inst->Opcode() == IrOpcode::LoadAddressU32 && IsRawRead(_program.Resources(), *inst) && inst->Argument(1)->Resolve()->HasImmediate() && RuntimeValidator(_program.Resources(), RuntimeValueType::Any).Run(inst)) {
                 Collect(inst, inst->Flags<MemoryFlags>().pc);
             }
