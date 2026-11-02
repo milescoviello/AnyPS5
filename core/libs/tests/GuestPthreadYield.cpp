@@ -2,6 +2,7 @@
 #include "prx/libkernel/include/Api.hpp"
 #include "SceTypes.hpp"
 #include "prx/libkernel/Pthread/include/Pthread.hpp"
+#include "prx/libkernel/Time/include/Time.hpp"
 #include <atomic>
 #include <bit>
 #include <cstdint>
@@ -50,6 +51,7 @@ int main() {
 
     Pthread worker = nullptr;
     Require(scePthreadCreate(&worker, nullptr, PingPong, const_cast<KernelCpumask*>(&cpu), nullptr) == SCE_OK);
+    Require(sceKernelUsleep_nid_postfix(200000) == SCE_OK);
     workerReady.wait(false);
     Require(workerPinned.load());
 
