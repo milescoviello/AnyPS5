@@ -1,0 +1,6 @@
+if(WIN32)
+    add_test_executable(bench_guest_copy_arena ${LIBS_INCLUDE_DIR}/tests/BenchGuestCopyArena.cpp)
+    target_include_directories(bench_guest_copy_arena PRIVATE ${LIBS_INCLUDE_DIR})
+    target_link_libraries(bench_guest_copy_arena PRIVATE libc)
+    configure_windows_unwind(bench_guest_copy_arena)
+endif()
