@@ -33,8 +33,8 @@ int main() {
     std::memset(&status, 0xff, sizeof(status));
     Require(sceVideoOutGetVblankStatus(handle, &status) == 0, "sceVideoOutGetVblankStatus failed");
     const std::uint64_t after = sceKernelReadTsc();
-    std::printf("TSC before the wait 0x%llx, third word 0x%llx, TSC after the call 0x%llx\n", static_cast<unsigned long long>(before),
-                static_cast<unsigned long long>(status.reserved), static_cast<unsigned long long>(after));
+    std::fprintf(stderr, "DIAG before %llu word %llu after %llu count %llu\n", static_cast<unsigned long long>(before),
+                static_cast<unsigned long long>(status.reserved), static_cast<unsigned long long>(after), static_cast<unsigned long long>(status.count));
     Require(status.reserved != 0, "the third word of the vblank status is 0");
     Require(before <= status.reserved && status.reserved <= after, "the third word is not the TSC of a vblank between the wait and the call");
     Require(sceVideoOutClose(handle) == 0, "close failed");
