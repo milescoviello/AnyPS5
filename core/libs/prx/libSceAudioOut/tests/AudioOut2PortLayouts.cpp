@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "prx/libSceAudioOut/include/AudioOut2.hpp"
 #include "prx/libSceAudioOut/src/AudioOut2PadMix.hpp"
 #include "SceTypes.hpp"
@@ -17,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-static void Require(bool value) { if (!value) std::abort(); }
+#define Require(value) do { if (!(value)) { std::fprintf(stderr, "port layouts check failed at line %d, errno %d\n", __LINE__, errno); std::fflush(stderr); std::abort(); } } while (0)
 
 static void SetEnvironment(const char* name, const std::string& value) {
 #ifdef _WIN32
