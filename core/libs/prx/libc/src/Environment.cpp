@@ -103,9 +103,19 @@ bool ValidEnvironmentName(const char* name) {
 constexpr std::size_t EnvironmentNameLimit = 0x10000;
 constexpr std::size_t EnvironmentTextLimit = 0x100000;
 
-int CopyEnvironmentText(const char* text, std::size_t limit, std::string& copy) {
+int ReadableGuestText(const char* text, std::size_t limit) {
     if (text == nullptr) return 0;
-    return CopyGuestString_nid_no_patch(text, limit, copy);
+    constexpr std::size_t Chunk = 512;
+    constexpr std::size_t Page = 4096;
+    char chunk[Chunk];
+    const auto address = reinterpret_cast<std::uintptr_t>(text);
+    for (std::size_t offset = 0; offset < limit;) {
+        const std::size_t count = std::min({Chunk, Page - (address + offset) % Page, limit - offset});
+        if (!GuestCopyIn_nid_no_patch(chunk, text + offset, count)) return 14;
+        if (std::memchr(chunk, 0, count)) return 0;
+        offset += count;
+    }
+    return 63;
 }
 int EnvironmentError(int error) { errno = error; return -1; }
 }
@@ -136,28 +146,25 @@ bool CopyGuestEnvironment_nid_no_patch(const char* name, std::string& value) {
 }
 
 char* APS5_VABI getenv_nid_postfix(const char* name) {
-    std::string copied;
-    if (const int error = CopyEnvironmentText(name, EnvironmentNameLimit, copied)) { errno = error; return nullptr; }
-    if (!ValidEnvironmentName(name ? copied.c_str() : nullptr)) { errno = 22; return nullptr; }
+    if (const int error = ReadableGuestText(name, EnvironmentNameLimit)) { errno = error; return nullptr; }
+    if (!ValidEnvironmentName(name)) { errno = 22; return nullptr; }
     auto& environment = Environment();
     std::lock_guard lock(environment.mutex);
-    char* const found = Find(environment, copied);
-    return found ? found + copied.size() + 1 : nullptr;
+    char* const found = Find(environment, name);
+    return found ? found + std::strlen(name) + 1 : nullptr;
 }
 
 int APS5_VABI setenv_nid_postfix(const char* name, const char* value, int overwrite) {
-    std::string nameCopy;
-    std::string valueCopy;
-    if (const int error = CopyEnvironmentText(name, EnvironmentNameLimit, nameCopy)) return EnvironmentError(error);
-    if (const int error = CopyEnvironmentText(value, EnvironmentTextLimit, valueCopy)) return EnvironmentError(error);
-    if (!ValidEnvironmentName(name ? nameCopy.c_str() : nullptr) || !value) return EnvironmentError(22);
+    if (const int error = ReadableGuestText(name, EnvironmentNameLimit)) return EnvironmentError(error);
+    if (const int error = ReadableGuestText(value, EnvironmentTextLimit)) return EnvironmentError(error);
+    if (!ValidEnvironmentName(name) || !value) return EnvironmentError(22);
     try {
         auto& environment = Environment();
         std::lock_guard lock(environment.mutex);
-        const std::string_view key(nameCopy);
+        const std::string_view key(name);
         char* const current = Find(environment, key);
         if (current && !overwrite) return 0;
-        const std::size_t valueLength = valueCopy.size();
+        const std::size_t valueLength = std::strlen(value);
         if (key.size() > std::numeric_limits<std::size_t>::max() - 2 || valueLength > std::numeric_limits<std::size_t>::max() - key.size() - 2)
             return EnvironmentError(12);
         const std::size_t bytes = key.size() + valueLength + 2;
@@ -167,15 +174,15 @@ int APS5_VABI setenv_nid_postfix(const char* name, const char* value, int overwr
         if (!reused) {
             created.owned = std::make_unique<char[]>(bytes);
             created.capacity = bytes;
-            std::memcpy(created.owned.get(), key.data(), key.size());
+            std::memcpy(created.owned.get(), name, key.size());
             created.owned[key.size()] = '=';
-            std::memcpy(created.owned.get() + key.size() + 1, valueCopy.c_str(), valueLength + 1);
+            std::memcpy(created.owned.get() + key.size() + 1, value, valueLength + 1);
         }
         char* const replacement = reused ? reused->owned.get() : created.owned.get();
         auto entries = Entries(environment);
         Replace(entries, key, replacement);
         auto table = Table(entries);
-        if (reused) std::memmove(replacement + key.size() + 1, valueCopy.c_str(), valueLength + 1);
+        if (reused) std::memmove(replacement + key.size() + 1, value, valueLength + 1);
         else environment.owned.push_back(std::move(created));
         Publish(environment, std::move(table));
         return 0;
@@ -183,13 +190,12 @@ int APS5_VABI setenv_nid_postfix(const char* name, const char* value, int overwr
 }
 
 int APS5_VABI unsetenv_nid_postfix(const char* name) {
-    std::string copied;
-    if (const int error = CopyEnvironmentText(name, EnvironmentNameLimit, copied)) return EnvironmentError(error);
-    if (!ValidEnvironmentName(name ? copied.c_str() : nullptr)) return EnvironmentError(22);
+    if (const int error = ReadableGuestText(name, EnvironmentNameLimit)) return EnvironmentError(error);
+    if (!ValidEnvironmentName(name)) return EnvironmentError(22);
     try {
         auto& environment = Environment();
         std::lock_guard lock(environment.mutex);
-        const std::string_view key(copied);
+        const std::string_view key(name);
         if (Find(environment, key) == nullptr) return 0;
         auto entries = Entries(environment);
         std::erase_if(entries, [key](const char* entry) { return Matches(entry, key); });
@@ -199,14 +205,13 @@ int APS5_VABI unsetenv_nid_postfix(const char* name) {
 }
 
 int APS5_VABI putenv_nid_postfix(char* text) {
-    std::string copied;
-    if (const int error = CopyEnvironmentText(text, EnvironmentTextLimit, copied)) return EnvironmentError(error);
-    const std::size_t separator = text ? copied.find('=') : std::string::npos;
-    if (separator == std::string::npos || separator == 0) return EnvironmentError(22);
+    if (const int error = ReadableGuestText(text, EnvironmentTextLimit)) return EnvironmentError(error);
+    const char* separator = text ? std::strchr(text, '=') : nullptr;
+    if (!separator || separator == text) return EnvironmentError(22);
     try {
         auto& environment = Environment();
         std::lock_guard lock(environment.mutex);
-        const std::string_view key(copied.data(), separator);
+        const std::string_view key(text, separator - text);
         auto entries = Entries(environment);
         Replace(entries, key, text);
         auto table = Table(entries);
