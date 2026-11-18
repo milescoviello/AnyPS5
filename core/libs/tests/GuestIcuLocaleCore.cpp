@@ -179,6 +179,35 @@ int main() {
     assert(uloc_getBaseName("en_US", output.data(), 16, &status) == 0);
     assert(status == 15 && output[0] == 'Q');
 
+    const auto* unmapped = reinterpret_cast<const char*>(0x10);
+    for (LocaleFunction function : {uloc_getLanguage, uloc_getCountry, uloc_getScript, uloc_getBaseName, uloc_canonicalize}) {
+        output.fill('Q');
+        status = 0;
+        assert(function(unmapped, output.data(), 16, &status) == 0);
+        assert(status == 1 && output[0] == 'Q');
+        status = 0;
+        assert(function("en_US", reinterpret_cast<char*>(0x10), 16, &status) == 0);
+        assert(status == 1);
+        bool statusThrown = false;
+        try {
+            function("en_US", output.data(), 16, reinterpret_cast<std::int32_t*>(0x10));
+        } catch (const std::invalid_argument&) {
+            statusThrown = true;
+        }
+        assert(statusThrown);
+    }
+    output.fill('Q');
+    status = 0;
+    assert(uloc_getKeywordValue(unmapped, "currency", output.data(), 16, &status) == 0);
+    assert(status == 1 && output[0] == 'Q');
+    status = 0;
+    assert(uloc_getKeywordValue("de@currency=EUR", unmapped, output.data(), 16, &status) == 0);
+    assert(status == 1 && output[0] == 'Q');
+    status = 0;
+    assert(uloc_getKeywordValue("de@currency=EUR", "currency", output.data(), 16, &status) == 3);
+    assert(status == 0 && std::string_view(output.data()) == "EUR");
+    assert(uloc_getISO3Language(unmapped)[0] == '\0' && uloc_getISO3Country(unmapped)[0] == '\0');
+
     Check(uloc_getParent, false, {
         {"en_US", "en"}, {"en_US_POSIX", "en_US"}, {"en-US", ""}, {"EN-us", ""},
         {"en", ""}, {"a", ""}, {"_US", ""}, {"und", ""}, {"und_US", ""}, {"und_", ""},
