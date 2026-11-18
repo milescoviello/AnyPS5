@@ -14,9 +14,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -503,32 +505,100 @@ std::string BaseName(const Parts& parts) {
     return result + parts.encoding;
 }
 
+std::int32_t LoadStatus(const std::int32_t* status) {
+    std::int32_t value = 0;
+    const int savedErrno = errno;
+    const bool copied = GuestCopyIn_nid_no_patch(&value, status, sizeof(value));
+    errno = savedErrno;
+    if (!copied) throw std::invalid_argument("uloc: unreadable UErrorCode");
+    return value;
+}
+
+void StoreStatus(std::int32_t* status, std::int32_t value) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(status, &value, sizeof(value));
+    errno = savedErrno;
+    if (!copied) throw std::invalid_argument("uloc: unwritable UErrorCode");
+}
+
+bool CopyOut(void* destination, const void* source, std::size_t bytes) {
+    const int savedErrno = errno;
+    const bool copied = GuestCopyOut_nid_no_patch(destination, source, bytes);
+    errno = savedErrno;
+    return copied;
+}
+
+bool CopyText(const char* source, std::string& destination) {
+    constexpr std::size_t Limit = 0x1000;
+    destination.clear();
+    char chunk[64];
+    auto address = reinterpret_cast<std::uintptr_t>(source);
+    while (destination.size() < Limit) {
+        const std::size_t count = std::min<std::size_t>(sizeof(chunk), 0x1000 - address % 0x1000);
+        if (address > std::numeric_limits<std::uintptr_t>::max() - count) return false;
+        const int savedErrno = errno;
+        const bool copied = GuestCopyIn_nid_no_patch(chunk, reinterpret_cast<const void*>(address), count);
+        errno = savedErrno;
+        if (!copied) return false;
+        if (const void* end = std::memchr(chunk, 0, count)) {
+            destination.append(chunk, static_cast<const char*>(end) - chunk);
+            return true;
+        }
+        destination.append(chunk, count);
+        address += count;
+    }
+    return false;
+}
+
+bool LocaleText(const char* locale, std::string& text) {
+    if (!locale) {
+        text = Icu::DefaultLocaleName();
+        return true;
+    }
+    return CopyText(locale, text);
+}
+
 std::int32_t Write(std::string_view value, char* destination, std::int32_t capacity,
                    std::int32_t* status, bool fullOnly) {
-    if (!status || *status > 0) return 0;
+    if (!status || LoadStatus(status) > 0) return 0;
     if (capacity < 0 || (capacity > 0 && !destination)) {
-        *status = kIllegalArgument;
+        StoreStatus(status, kIllegalArgument);
         return 0;
     }
     if (value.size() > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
-        *status = kIllegalArgument;
+        StoreStatus(status, kIllegalArgument);
         return 0;
     }
     const auto size = static_cast<std::int32_t>(value.size());
     if (size > 0 && destination && capacity > 0 && (!fullOnly || capacity >= size)) {
-        std::memcpy(destination, value.data(), static_cast<std::size_t>(std::min(capacity, size)));
+        if (!CopyOut(destination, value.data(), static_cast<std::size_t>(std::min(capacity, size)))) {
+            StoreStatus(status, kIllegalArgument);
+            return 0;
+        }
     }
-    if (capacity > size && destination) destination[size] = '\0';
-    else if (capacity == size) *status = kStringNotTerminated;
-    else *status = kBufferOverflow;
+    if (capacity > size && destination) {
+        const char terminator = '\0';
+        if (!CopyOut(destination + size, &terminator, 1)) {
+            StoreStatus(status, kIllegalArgument);
+            return 0;
+        }
+    } else if (capacity == size) {
+        StoreStatus(status, kStringNotTerminated);
+    } else {
+        StoreStatus(status, kBufferOverflow);
+    }
     return size;
 }
 
 std::int32_t Component(const char* locale, char* result, std::int32_t capacity,
                        std::int32_t* status, int which) {
-    if (!status || *status > 0) return 0;
-    if (!locale) locale = Icu::DefaultLocaleName();
-    Parts parts = Parse(locale);
+    if (!status || LoadStatus(status) > 0) return 0;
+    std::string text;
+    if (!LocaleText(locale, text)) {
+        StoreStatus(status, kIllegalArgument);
+        return 0;
+    }
+    Parts parts = Parse(text.c_str());
     const std::string& value = which == 0 ? parts.language : which == 1 ? parts.country : parts.script;
     return Write(value, result, capacity, status, true);
 }
@@ -558,33 +628,39 @@ std::int32_t APS5_VABI uloc_getScript(const char* locale, char* result,
 
 std::int32_t APS5_VABI uloc_getBaseName(const char* locale, char* result,
                                        std::int32_t capacity, std::int32_t* status) {
-    if (!status || *status > 0) return 0;
-    if (!locale) locale = Icu::DefaultLocaleName();
-    return Write(BaseName(Parse(locale)), result, capacity, status, false);
+    if (!status || LoadStatus(status) > 0) return 0;
+    std::string text;
+    if (!LocaleText(locale, text)) {
+        StoreStatus(status, kIllegalArgument);
+        return 0;
+    }
+    return Write(BaseName(Parse(text.c_str())), result, capacity, status, false);
 }
 
 std::int32_t APS5_VABI uloc_getKeywordValue(const char* locale, const char* keyword,
                                            char* result, std::int32_t capacity,
                                            std::int32_t* status) {
-    if (!status || *status > 0) return 0;
-    if (!locale || !keyword || !KeywordName(keyword)) {
-        *status = kIllegalArgument;
+    if (!status || LoadStatus(status) > 0) return 0;
+    std::string localeText;
+    std::string keywordText;
+    if (!locale || !keyword || !CopyText(locale, localeText) || !CopyText(keyword, keywordText) || !KeywordName(keywordText)) {
+        StoreStatus(status, kIllegalArgument);
         return 0;
     }
-    const std::string requested = ChangeCase(keyword, false);
-    std::string_view input(locale);
+    const std::string requested = ChangeCase(keywordText, false);
+    std::string_view input(localeText);
     std::string converted;
     if (input.find('@') == std::string_view::npos && ShortestSubtagIsOne(input)) {
         std::int32_t conversion = 0;
-        const std::int32_t length = uloc_forLanguageTag(locale, nullptr, 0, nullptr, &conversion);
+        const std::int32_t length = uloc_forLanguageTag(localeText.c_str(), nullptr, 0, nullptr, &conversion);
         if (conversion > 0 && conversion != kBufferOverflow) {
-            *status = conversion;
+            StoreStatus(status, conversion);
             return 0;
         }
         if (length > 0) {
             converted.resize(static_cast<std::size_t>(length));
             conversion = 0;
-            uloc_forLanguageTag(locale, converted.data(), length, nullptr, &conversion);
+            uloc_forLanguageTag(localeText.c_str(), converted.data(), length, nullptr, &conversion);
             input = converted;
         }
     }
@@ -593,7 +669,7 @@ std::int32_t APS5_VABI uloc_getKeywordValue(const char* locale, const char* keyw
         const auto equal = input.find('=', start + 1);
         const auto name = Trim(input.substr(start + 1, equal - start - 1));
         if (equal == std::string_view::npos || !KeywordName(name)) {
-            *status = kIllegalArgument;
+            StoreStatus(status, kIllegalArgument);
             return 0;
         }
         start = input.find(';', equal);
@@ -601,7 +677,7 @@ std::int32_t APS5_VABI uloc_getKeywordValue(const char* locale, const char* keyw
             const auto value = Trim(input.substr(
                 equal + 1, start == std::string_view::npos ? start : start - equal - 1));
             if (value.empty() || !std::all_of(value.begin(), value.end(), ValueCharacter)) {
-                *status = kIllegalArgument;
+                StoreStatus(status, kIllegalArgument);
                 return 0;
             }
             return Write(value, result, capacity, status, false);
@@ -612,9 +688,13 @@ std::int32_t APS5_VABI uloc_getKeywordValue(const char* locale, const char* keyw
 
 std::int32_t APS5_VABI uloc_canonicalize(const char* locale, char* result,
                                         std::int32_t capacity, std::int32_t* status) {
-    if (!status || *status > 0) return 0;
-    if (!locale) locale = Icu::DefaultLocaleName();
-    Parts parts = Parse(locale);
+    if (!status || LoadStatus(status) > 0) return 0;
+    std::string text;
+    if (!LocaleText(locale, text)) {
+        StoreStatus(status, kIllegalArgument);
+        return 0;
+    }
+    Parts parts = Parse(text.c_str());
     parts.encoding.clear();
     std::string canonical = parts.language == "x-private" ? "@x=private" : BaseName(parts);
     if (!parts.keywords.empty()) {
@@ -665,13 +745,15 @@ std::int32_t APS5_VABI uloc_getParent(const char* locale, char* result,
 }
 
 const char* APS5_VABI uloc_getISO3Language(const char* locale) {
-    if (!locale) locale = Icu::DefaultLocaleName();
-    return Iso3Language(Parse(locale).language);
+    std::string text;
+    if (!LocaleText(locale, text)) return "";
+    return Iso3Language(Parse(text.c_str()).language);
 }
 
 const char* APS5_VABI uloc_getISO3Country(const char* locale) {
-    if (!locale) locale = Icu::DefaultLocaleName();
-    return Iso3Country(Parse(locale).country);
+    std::string text;
+    if (!LocaleText(locale, text)) return "";
+    return Iso3Country(Parse(text.c_str()).country);
 }
 
 const char* const* APS5_VABI uloc_getISOLanguages() {
