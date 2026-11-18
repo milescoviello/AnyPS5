@@ -95,4 +95,18 @@ int main() {
     errno = 0;
     Require(putenv_nid_postfix(reinterpret_cast<char*>(0x10)) == -1 && errno == 14);
     Require(std::strcmp(getenv_nid_postfix("Q7C"), "own") == 0);
+    std::string longName(0x10000, 'N');
+    errno = 0;
+    Require(getenv_nid_postfix(longName.c_str()) == nullptr && errno == 63);
+    errno = 0;
+    Require(setenv_nid_postfix(longName.c_str(), "x", 1) == -1 && errno == 63);
+    longName.pop_back();
+    Require(setenv_nid_postfix(longName.c_str(), "fits", 1) == 0 && std::strcmp(getenv_nid_postfix(longName.c_str()), "fits") == 0);
+    Require(unsetenv_nid_postfix(longName.c_str()) == 0 && getenv_nid_postfix(longName.c_str()) == nullptr);
+    std::string longValue(0x40000, 'v');
+    longValue[0x3ffff] = 'w';
+    Require(setenv_nid_postfix("Q7E", longValue.c_str(), 1) == 0 && getenv_nid_postfix("Q7E") == longValue);
+    std::string overLimit(0x100000, 'o');
+    errno = 0;
+    Require(setenv_nid_postfix("Q7E", overLimit.c_str(), 1) == -1 && errno == 63 && getenv_nid_postfix("Q7E") == longValue);
 }
