@@ -1,5 +1,6 @@
 #include "prx/libc/include/Api.hpp"
 #include "prx/libc/include/general/VabiMacros.hpp"
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -82,4 +83,16 @@ int main() {
     Require(getenv_nid_postfix("Q7C") == lent + 4 && std::strcmp(second, "again") == 0);
     Require(setenv_nid_postfix("Q7C", "own", 1) == 0);
     Require(std::strcmp(getenv_nid_postfix("Q7C"), "own") == 0 && std::strcmp(lent, "Q7C=lent") == 0 && std::strcmp(second, "again") == 0);
+    const auto* unmapped = reinterpret_cast<const char*>(0x10);
+    errno = 0;
+    Require(getenv_nid_postfix(unmapped) == nullptr && errno == 14);
+    errno = 0;
+    Require(setenv_nid_postfix(unmapped, "x", 1) == -1 && errno == 14);
+    errno = 0;
+    Require(setenv_nid_postfix("Q7D", unmapped, 1) == -1 && errno == 14 && getenv_nid_postfix("Q7D") == nullptr);
+    errno = 0;
+    Require(unsetenv_nid_postfix(unmapped) == -1 && errno == 14);
+    errno = 0;
+    Require(putenv_nid_postfix(reinterpret_cast<char*>(0x10)) == -1 && errno == 14);
+    Require(std::strcmp(getenv_nid_postfix("Q7C"), "own") == 0);
 }
