@@ -144,8 +144,8 @@ void CheckMatching(int context) {
     Require(Get(context, "http://e.test/") == "late=1; bad=1; huge=1; huger=1; far=1; keep=1", "expiries beyond the clock range saturate");
     Require(sceHttpAddCookie(context, "http://c.test/", "cut=1234; Path=/x", 8) == 0, "the length bounds the cookie");
     Require(Get(context, "http://c.test/") == "cut=1234", "only the given length is parsed");
-    Require(sceHttpAddCookie(context, "http://f.test/", "short=1", 4096) == 0, "a length past the terminator");
-    Require(Get(context, "http://f.test/") == "short=1", "the cookie ends at its terminator");
+    Require(sceHttpAddCookie(context, "http://terminator.test/", "short=1", 4096) == 0, "a length past the terminator");
+    Require(Get(context, "http://terminator.test/") == "short=1", "the cookie ends at its terminator");
     Require(sceHttpCookieFlush(context) == 0 && Stats(context).cookieCount == 0, "flush empties the store");
 }
 
