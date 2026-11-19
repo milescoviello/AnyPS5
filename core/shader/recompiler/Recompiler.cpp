@@ -2072,6 +2072,17 @@ auto recompileReporting(const RecompileRequest& request, Impl&& impl) -> decltyp
         throw;
     } catch (const std::exception& e) {
         NoteFailureOnce();
+        std::fprintf(stderr, "[23707] what: %s\n", e.what());
+        std::fprintf(stderr, "[23707] request %p code %p/%zu userData %p/%zu memory %p/%zu caps %p/%zu exts %p/%zu fallbacks %p/%zu graphics %d\n",
+            static_cast<const void*>(&request),
+            static_cast<const void*>(request.shader.code.data()), request.shader.code.size(),
+            static_cast<const void*>(request.context.userData.data()), request.context.userData.size(),
+            static_cast<const void*>(request.context.memory.data()), request.context.memory.size(),
+            static_cast<const void*>(request.target.supportedCapabilities.data()), request.target.supportedCapabilities.size(),
+            static_cast<const void*>(request.target.supportedExtensions.data()), request.target.supportedExtensions.size(),
+            static_cast<const void*>(request.context.linkedCallFallbacks.data()), request.context.linkedCallFallbacks.size(),
+            request.graphics.has_value() ? 1 : 0);
+        std::fflush(stderr);
         constexpr auto requestSerializer = RequestSerializer{};
         const auto inputInfo = "\nRecompileRequest:\n" + requestSerializer.Serialize(request);
         throw std::runtime_error(std::string("ShaderRecompiler::Recompile: ") + e.what() + inputInfo);
@@ -2267,6 +2278,12 @@ std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& 
 }
 
 RecompileResult Recompile(const RecompileRequest& request) {
+    std::fprintf(stderr, "[23707] enter request %p code %p/%zu userData %p/%zu caps %p/%zu fallbacks %p/%zu\n",
+        static_cast<const void*>(&request),
+        static_cast<const void*>(request.shader.code.data()), request.shader.code.size(),
+        static_cast<const void*>(request.context.userData.data()), request.context.userData.size(),
+        static_cast<const void*>(request.target.supportedCapabilities.data()), request.target.supportedCapabilities.size(),
+        static_cast<const void*>(request.context.linkedCallFallbacks.data()), request.context.linkedCallFallbacks.size());
     return recompileReporting(request, [&] { return RecompileImpl(request); });
 }
 
