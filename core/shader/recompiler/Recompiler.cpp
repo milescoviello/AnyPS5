@@ -60,6 +60,16 @@
 #include <string>
 #include <ControlFlow/RequestSerializer.hpp>
 
+#include <cstdarg>
+static void diag23707(const char* format, ...) {
+    FILE* file = std::fopen("C:/agent/logs/diag23707.txt", "a");
+    if (file == nullptr) return;
+    va_list args;
+    va_start(args, format);
+    std::vfprintf(file, format, args);
+    va_end(args);
+    std::fclose(file);
+}
 namespace ShaderRecompiler {
 
 namespace {
@@ -2072,8 +2082,8 @@ auto recompileReporting(const RecompileRequest& request, Impl&& impl) -> decltyp
         throw;
     } catch (const std::exception& e) {
         NoteFailureOnce();
-        std::fprintf(stderr, "[23707] what: %s\n", e.what());
-        std::fprintf(stderr, "[23707] request %p code %p/%zu userData %p/%zu memory %p/%zu caps %p/%zu exts %p/%zu fallbacks %p/%zu graphics %d\n",
+        diag23707("[23707] what: %s\n", e.what());
+        diag23707("[23707] request %p code %p/%zu userData %p/%zu memory %p/%zu caps %p/%zu exts %p/%zu fallbacks %p/%zu graphics %d\n",
             static_cast<const void*>(&request),
             static_cast<const void*>(request.shader.code.data()), request.shader.code.size(),
             static_cast<const void*>(request.context.userData.data()), request.context.userData.size(),
@@ -2278,7 +2288,7 @@ std::shared_ptr<const ResourceCapture> CaptureResources(const RecompileRequest& 
 }
 
 RecompileResult Recompile(const RecompileRequest& request) {
-    std::fprintf(stderr, "[23707] enter request %p code %p/%zu userData %p/%zu caps %p/%zu fallbacks %p/%zu\n",
+    diag23707("[23707] enter request %p code %p/%zu userData %p/%zu caps %p/%zu fallbacks %p/%zu\n",
         static_cast<const void*>(&request),
         static_cast<const void*>(request.shader.code.data()), request.shader.code.size(),
         static_cast<const void*>(request.context.userData.data()), request.context.userData.size(),
