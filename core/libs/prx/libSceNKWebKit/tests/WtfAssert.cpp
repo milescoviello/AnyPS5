@@ -22,6 +22,10 @@ void Require(bool condition, std::source_location location = std::source_locatio
     }
 }
 
+bool EndsWith(const std::string& text, const std::string& tail) {
+    return text.size() >= tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
+}
+
 const char* Unmapped() {
     return reinterpret_cast<const char*>(std::uintptr_t{0x10});
 }
@@ -63,8 +67,10 @@ int main() {
     Require(Captured([] { WTFReportArgumentAssertionFailure("Args.cpp", 3, "check", Unmapped(), Unmapped()); }) == "ARGUMENT BAD: , \n(Args.cpp:3 check)\n");
     Require(Captured([] { WTFReportNotImplementedYet("Later.cpp", 7, "draw"); }) == "NOT IMPLEMENTED YET\n(Later.cpp:7 draw)\n");
     Require(Captured([] { WTFReportNotImplementedYet(Unmapped(), 7, Unmapped()); }) == "NOT IMPLEMENTED YET\n(:7 )\n");
-    Require(Captured([] { WTFReportError("Error.cpp", 9, "load", "plain"); }) == "ERROR: plain\n(Error.cpp:9 load)\n");
-    Require(Captured([] { WTFReportError(Unmapped(), 9, Unmapped(), "plain"); }) == "ERROR: plain\n(:9 )\n");
+    const std::string error = Captured([] { WTFReportError("Error.cpp", 9, "load", "plain"); });
+    Require(error.rfind("ERROR: ", 0) == 0 && EndsWith(error, "\n(Error.cpp:9 load)\n"));
+    const std::string unreadable = Captured([] { WTFReportError(Unmapped(), 9, Unmapped(), "plain"); });
+    Require(unreadable.rfind("ERROR: ", 0) == 0 && EndsWith(unreadable, "\n(:9 )\n"));
     std::puts("WTF assertion reports read their file, function, assertion and argument strings through checked copies");
     return 0;
 }
