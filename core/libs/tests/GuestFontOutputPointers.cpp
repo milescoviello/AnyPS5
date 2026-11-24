@@ -2,6 +2,7 @@
 #include "prx/libSceFontFt/include/Api.hpp"
 #include "prx/libSceFont/include/Api.hpp"
 #include "prx/libc/include/GuestArena.hpp"
+#include "prx/libc/include/General.hpp"
 #include "prx/libc/include/GuestWriteWatch.hpp"
 #include <array>
 #include <cerrno>
@@ -109,7 +110,19 @@ static int CheckWatched() {
     Require(sceFontCreateRenderer(memory, sceFontSelectRendererFt(0), renderer) == SCE_FONT_OK && *renderer != nullptr);
     const std::vector<unsigned char> fontData = BuildCharacterFont();
     arm();
-    Require(sceFontOpenFontMemory(*library, fontData.data(), static_cast<std::uint32_t>(fontData.size()), nullptr, font) == SCE_FONT_OK && *font != nullptr);
+#ifdef _WIN32
+    {
+        MEMORY_BASIC_INFORMATION info{};
+        VirtualQuery(font, &info, sizeof(info));
+        std::fprintf(stderr, "debug: font slot protect 0x%lx, writable %d\n", static_cast<unsigned long>(info.Protect), GuestWritable_nid_no_patch(font, sizeof(*font)) ? 1 : 0);
+        GuestArena::HostWrite guard(font, sizeof(*font));
+        VirtualQuery(font, &info, sizeof(info));
+        std::fprintf(stderr, "debug: under HostWrite open %d protect 0x%lx writable %d\n", guard.Open() ? 1 : 0, static_cast<unsigned long>(info.Protect), GuestWritable_nid_no_patch(font, sizeof(*font)) ? 1 : 0);
+    }
+#endif
+    const int openResult = sceFontOpenFontMemory(*library, fontData.data(), static_cast<std::uint32_t>(fontData.size()), nullptr, font);
+    std::fprintf(stderr, "debug: open result %d (0x%x) font %p\n", openResult, static_cast<unsigned>(openResult), static_cast<void*>(*font));
+    Require(openResult == SCE_FONT_OK && *font != nullptr);
     arm();
     Require(sceFontGenerateCharGlyph(*font, 'A', nullptr, glyph) == SCE_FONT_OK && *glyph != nullptr);
     arm();
