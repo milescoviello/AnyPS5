@@ -1,10 +1,10 @@
 add_test_executable(guest_exception_abi_entry_points_tests ${LIBS_INCLUDE_DIR}/tests/GuestExceptionAbiEntryPoints.cpp)
 target_include_directories(guest_exception_abi_entry_points_tests PRIVATE ${LIBS_INCLUDE_DIR})
-target_link_libraries(guest_exception_abi_entry_points_tests PRIVATE libc)
+target_link_libraries(guest_exception_abi_entry_points_tests PRIVATE libkernel libc)
 configure_windows_unwind(guest_exception_abi_entry_points_tests)
 add_test(NAME guest_exception_abi_entry_points COMMAND guest_exception_abi_entry_points_tests)
 set_tests_properties(guest_exception_abi_entry_points PROPERTIES TIMEOUT 10)
 if(WIN32)
     set_tests_properties(guest_exception_abi_entry_points PROPERTIES ENVIRONMENT_MODIFICATION
-        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>;PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
 endif()
